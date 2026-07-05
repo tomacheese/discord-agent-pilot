@@ -1,0 +1,21 @@
+guildId: "123456789012345678"
+parentChannel:
+  type: forum
+  id: "234567890123456789"
+allowedUserIds:
+  - "345678901234567890"
+workspaceRoots:
+  - "/mnt/ssd/repos"
+configDirs:
+  - hostPath: "~/.claude"
+    containerPath: "/host/claude-config"
+tmux:
+  pollIntervalMs: 3000
+  socketDir: "/tmp/tmux-host"
+sessionResolution:
+  ambiguityThresholdMs: 3000
+claude:
+  defaultConfigDir:
+    hostPath: "~/.claude"
+    containerPath: "/host/claude-config"
+  procRoot: "/proc"
