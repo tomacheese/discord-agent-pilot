@@ -11,7 +11,7 @@ WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm --activate
 
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
