@@ -32,6 +32,14 @@ const defaultExec: ExecFunction = async (socketPath, arguments_) => {
 }
 
 /**
+ * Field delimiter for the `tmux list-panes -F` format string below. A tab
+ * cannot appear in a tmux session name (tmux itself rejects it), unlike a
+ * plain space — `tmux rename-session "my project"` is valid and would
+ * otherwise silently misalign the 3-way destructure in `listAllTmuxPanes`.
+ */
+const FIELD_DELIMITER = '\t'
+
+/**
  * Lists every pane across every tmux session on the server at `socketPath`
  * in a single `tmux list-panes -a` call (avoiding one `list-sessions` plus
  * one `list-panes` call per session). `tmux` exits non-zero both when the
@@ -40,14 +48,6 @@ const defaultExec: ExecFunction = async (socketPath, arguments_) => {
  * an error, so both are treated as an empty result rather than propagating
  * the exec failure.
  */
-/**
- * Field delimiter for the `tmux list-panes -F` format string below. A tab
- * cannot appear in a tmux session name (tmux itself rejects it), unlike a
- * plain space — `tmux rename-session "my project"` is valid and would
- * otherwise silently misalign the 3-way destructure in `listAllTmuxPanes`.
- */
-const FIELD_DELIMITER = '\t'
-
 export async function listAllTmuxPanes(
   socketPath: string,
   exec: ExecFunction = defaultExec
