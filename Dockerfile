@@ -3,9 +3,9 @@
 # ===== Stage 1: builder =====
 FROM node:24-alpine AS builder
 
-# better-sqlite3 のネイティブビルドに必要なツール
+# Native build tools required by better-sqlite3
 # hadolint ignore=DL3018
-RUN apk add --no-cache python3 make g++ tmux
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 

@@ -2,49 +2,40 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import {
-  listTmuxPanes,
-  listTmuxSessions,
-  resolveTmuxSocketPath,
-} from './list-sessions.js'
+import { listAllTmuxPanes, resolveTmuxSocketPath } from './list-sessions.js'
 
-describe('listTmuxSessions', () => {
-  it('parses one session per line', () => {
-    const exec = vi.fn().mockReturnValue('session-a\nsession-b\n')
+describe('listAllTmuxPanes', () => {
+  it('parses session name, pane id, and pid per line', async () => {
+    const exec = vi
+      .fn()
+      .mockResolvedValue('session-a %0 1111\nsession-b %1 2222\n')
 
-    const sessions = listTmuxSessions('/tmp/tmux-host/default', exec)
-
-    expect(sessions).toEqual([{ name: 'session-a' }, { name: 'session-b' }])
-    expect(exec).toHaveBeenCalledWith('/tmp/tmux-host/default', [
-      'list-sessions',
-      '-F',
-      '#{session_name}',
-    ])
-  })
-
-  it('returns an empty array when there are no sessions', () => {
-    const exec = vi.fn().mockReturnValue('')
-    expect(listTmuxSessions('/tmp/tmux-host/default', exec)).toEqual([])
-  })
-})
-
-describe('listTmuxPanes', () => {
-  it('parses pane id and pid per line', () => {
-    const exec = vi.fn().mockReturnValue('%0 1111\n%1 2222\n')
-
-    const panes = listTmuxPanes('/tmp/tmux-host/default', 'session-a', exec)
+    const panes = await listAllTmuxPanes('/tmp/tmux-host/default', exec)
 
     expect(panes).toEqual([
-      { paneId: '%0', pid: '1111' },
-      { paneId: '%1', pid: '2222' },
+      { sessionName: 'session-a', paneId: '%0', pid: '1111' },
+      { sessionName: 'session-b', paneId: '%1', pid: '2222' },
     ])
     expect(exec).toHaveBeenCalledWith('/tmp/tmux-host/default', [
       'list-panes',
-      '-t',
-      'session-a',
+      '-a',
       '-F',
-      '#{pane_id} #{pane_pid}',
+      '#{session_name} #{pane_id} #{pane_pid}',
     ])
+  })
+
+  it('returns an empty array when tmux exits non-zero (no server/no sessions)', async () => {
+    const exec = vi.fn().mockRejectedValue(new Error('no server running'))
+
+    expect(await listAllTmuxPanes('/tmp/tmux-host/default', exec)).toEqual([])
+  })
+
+  it('throws on an unexpected output line missing a field', async () => {
+    const exec = vi.fn().mockResolvedValue('session-a %0\n')
+
+    await expect(
+      listAllTmuxPanes('/tmp/tmux-host/default', exec)
+    ).rejects.toThrow('Unexpected tmux list-panes -a output line')
   })
 })
 

@@ -48,10 +48,22 @@ interface FakeCollectInteraction {
 function makeFakeChannel() {
   let collectCallback:
     ((interaction: FakeCollectInteraction) => void) | undefined
+  let endCallback: ((collected: unknown, reason: string) => void) | undefined
   const collector = {
-    on: vi.fn((event: string, callback: typeof collectCallback) => {
-      if (event === 'collect') collectCallback = callback
-    }),
+    on: vi.fn(
+      (
+        event: string,
+        callback:
+          | typeof collectCallback
+          | ((collected: unknown, reason: string) => void)
+      ) => {
+        if (event === 'collect') {
+          collectCallback = callback as typeof collectCallback
+        } else if (event === 'end') {
+          endCallback = callback as typeof endCallback
+        }
+      }
+    ),
   }
   const message = {
     createMessageComponentCollector: vi.fn().mockReturnValue(collector),
@@ -63,6 +75,7 @@ function makeFakeChannel() {
     channel,
     emitCollect: (interaction: FakeCollectInteraction) =>
       collectCallback?.(interaction),
+    emitEnd: (reason: string) => endCallback?.(undefined, reason),
   }
 }
 
@@ -115,5 +128,22 @@ describe('promptSessionIdSelection', () => {
       reply: vi.fn(),
     })
     await expect(resultPromise).resolves.toBe('session-a')
+  })
+
+  it('resolves to undefined when the collector times out without a selection', async () => {
+    const { channel, emitEnd } = makeFakeChannel()
+    const resultPromise = promptSessionIdSelection(
+      channel,
+      ['session-a'],
+      makeConfig(['user-1'])
+    )
+
+    // Flush the microtask queue so the promise-executor's `await
+    // channel.send(...)` continuation runs and registers the collector
+    // before we emit the timeout.
+    await Promise.resolve()
+    emitEnd('time')
+
+    await expect(resultPromise).resolves.toBeUndefined()
   })
 })

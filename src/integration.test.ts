@@ -86,13 +86,9 @@ describe('fauxcord integration', () => {
     })
     client.rest.setToken(BOT_TOKEN)
 
-    // This test never calls `client.login()` (fauxcord mocks the REST API
-    // only, not the Gateway), so `client.guilds.cache` is never populated by
-    // a READY event. discord.js's channel/thread construction resolves the
-    // owning guild via `client.guilds.cache.get(guildId)`; without this
-    // explicit fetch, `client.channels.fetch()` returns `null` (no cached
-    // guild to attach the channel to) and thread creation fails the same
-    // way. Fetching the guild first populates that cache.
+    // No `client.login()` here (fauxcord mocks REST only, not the Gateway),
+    // so the guild cache discord.js relies on for channel/thread
+    // construction is never populated by a READY event; fetch it explicitly.
     await client.guilds.fetch(guildId)
 
     const channel = (await client.channels.fetch(

@@ -7,7 +7,7 @@ import {
   insertSession,
   type SessionRow,
 } from '../registry/sessions.js'
-import { listTmuxPanes, listTmuxSessions } from '../tmux/list-sessions.js'
+import { listAllTmuxPanes } from '../tmux/list-sessions.js'
 import { readProcessCwd, readProcessEnviron } from '../tmux/proc.js'
 import { findClaudeProcessPid } from '../tmux/process-tree.js'
 import {
@@ -28,17 +28,51 @@ export interface OrchestratorDeps {
    * Channel to post the ambiguity Select menu to. `undefined` when
    * `config.parentChannel.type === 'forum'`, since a `ForumChannel` cannot
    * be posted to directly (§ Global Constraints) — ambiguous sessions are
-   * logged and left unresolved in that configuration for Phase 1.
+   * logged and left unresolved in that configuration for Phase 1 (see the
+   * forum-skip branch in `processPane` for the exact condition enforced).
    */
   promptChannel: PromptChannel | undefined
   ambiguityTracker: AmbiguityTracker
   procRoot: string
   socketPath: string
+  /**
+   * Panes (keyed by `${tmuxSession}:${panePid}`) whose sessionId has
+   * already been resolved and registered, so their expensive resolution
+   * pipeline can be skipped on subsequent detection cycles.
+   */
+  resolvedPanes: Set<string>
+  /**
+   * SessionIds currently mid-registration, guarding against two panes that
+   * resolve to the same sessionId within one parallelized detection cycle
+   * both attempting to create a Discord thread / insert the same
+   * `sessions.id` primary key.
+   */
+  registeringSessionIds: Set<string>
+}
+
+/** Builds the `resolvedPanes` cache key identifying a tmux session/pane pair. */
+function paneKey(tmuxSession: string, panePid: string): string {
+  return `${tmuxSession}:${panePid}`
+}
+
+/**
+ * Returns true if `cwd` is inside one of `workspaceRoots` (§6). A root
+ * matches if `cwd` equals it exactly or is a subdirectory of it.
+ */
+function isWithinWorkspaceRoots(
+  cwd: string,
+  workspaceRoots: string[]
+): boolean {
+  return workspaceRoots.some(
+    (root) => cwd === root || cwd.startsWith(`${root}/`)
+  )
 }
 
 /**
  * Registers `sessionId` (creating its Discord thread) unless it is already
- * registered (§4 step 6).
+ * registered (§4 step 6). Guards against concurrent registration of the
+ * same sessionId from a parallel `processPane` call via
+ * `deps.registeringSessionIds`.
  */
 async function registerSession(
   deps: OrchestratorDeps,
@@ -50,24 +84,31 @@ async function registerSession(
   containerConfigDir: string
 ): Promise<void> {
   if (findSessionById(deps.db, sessionId)) return
+  if (deps.registeringSessionIds.has(sessionId)) return
+  deps.registeringSessionIds.add(sessionId)
 
-  const thread = await deps.parentChannel.createSessionThread(sessionId)
-  const now = Date.now()
-  const row: SessionRow = {
-    id: sessionId,
-    threadId: thread.id,
-    parentChannelId: config.parentChannel.id,
-    tmuxSession,
-    tmuxPanePid: panePid,
-    cwd,
-    configDir: containerConfigDir,
-    jsonlPath: `${containerConfigDir}/projects/${cwd.replaceAll('/', '-')}/${sessionId}.jsonl`,
-    jsonlOffset: 0,
-    status: 'discovered',
-    createdAt: now,
-    updatedAt: now,
+  try {
+    const thread = await deps.parentChannel.createSessionThread(sessionId)
+    const now = Date.now()
+    const row: SessionRow = {
+      id: sessionId,
+      threadId: thread.id,
+      parentChannelId: config.parentChannel.id,
+      tmuxSession,
+      tmuxPanePid: panePid,
+      cwd,
+      configDir: containerConfigDir,
+      jsonlPath: `${containerConfigDir}/projects/${cwd.replaceAll('/', '-')}/${sessionId}.jsonl`,
+      jsonlOffset: 0,
+      status: 'discovered',
+      createdAt: now,
+      updatedAt: now,
+    }
+    insertSession(deps.db, row)
+    deps.resolvedPanes.add(paneKey(tmuxSession, panePid))
+  } finally {
+    deps.registeringSessionIds.delete(sessionId)
   }
-  insertSession(deps.db, row)
 }
 
 /**
@@ -80,21 +121,20 @@ async function processPane(
   tmuxSession: string,
   panePid: string
 ): Promise<void> {
-  const claudePid = findClaudeProcessPid(deps.procRoot, panePid)
+  if (deps.resolvedPanes.has(paneKey(tmuxSession, panePid))) return
+
+  const claudePid = await findClaudeProcessPid(deps.procRoot, panePid)
   if (!claudePid) return
 
-  const cwd = readProcessCwd(deps.procRoot, claudePid)
-  const environment = readProcessEnviron(deps.procRoot, claudePid)
-  // `readProcessEnviron` returns `Record<string, string>`, but an
-  // arbitrary env var key may legitimately be absent at runtime; the cast
-  // reflects that so `??` isn't flagged as unnecessary by the type
-  // checker's (overly narrow) inferred index signature.
+  const cwd = await readProcessCwd(deps.procRoot, claudePid)
+  if (!isWithinWorkspaceRoots(cwd, config.workspaceRoots)) return
+
+  const environment = await readProcessEnviron(deps.procRoot, claudePid)
   const hostConfigDir =
-    (environment as Record<string, string | undefined>).CLAUDE_CONFIG_DIR ??
-    config.claude.defaultConfigDir.hostPath
+    environment.CLAUDE_CONFIG_DIR ?? config.claude.defaultConfigDir.hostPath
   const containerConfigDir = resolveContainerConfigDir(config, hostConfigDir)
 
-  const resolution = resolveSessionId(
+  const resolution = await resolveSessionId(
     deps.procRoot,
     containerConfigDir,
     claudePid,
@@ -107,8 +147,9 @@ async function processPane(
   if (resolution.kind === 'ambiguous') {
     if (!deps.promptChannel) {
       // Phase 1 limitation: forum parent channels cannot host the Select
-      // menu prompt (see OrchestratorDeps.promptChannel). Log once per
-      // detection cycle and leave the session unregistered.
+      // menu prompt (see OrchestratorDeps.promptChannel). Logs on every
+      // detection cycle this pane remains ambiguous (not deduplicated),
+      // and leaves the session unregistered.
       console.warn(
         'Ambiguous sessionId candidates found but the parent channel is a forum; skipping human resolution.',
         { tmuxSession, panePid, candidates: resolution.candidates }
@@ -127,6 +168,7 @@ async function processPane(
       config
     )
     deps.ambiguityTracker.resolve(tmuxSession, panePid)
+    if (sessionId === undefined) return
     await registerSession(
       deps,
       config,
@@ -155,11 +197,8 @@ export async function runDetectionCycle(
   deps: OrchestratorDeps,
   config: Config
 ): Promise<void> {
-  const sessions = listTmuxSessions(deps.socketPath)
-  for (const session of sessions) {
-    const panes = listTmuxPanes(deps.socketPath, session.name)
-    for (const pane of panes) {
-      await processPane(deps, config, session.name, pane.pid)
-    }
-  }
+  const panes = await listAllTmuxPanes(deps.socketPath)
+  await Promise.all(
+    panes.map((pane) => processPane(deps, config, pane.sessionName, pane.pid))
+  )
 }

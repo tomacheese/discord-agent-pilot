@@ -1,56 +1,69 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
-/** A tmux session, as listed by `tmux list-sessions`. */
-export interface TmuxSession {
-  name: string
-}
+const execFileAsync = promisify(execFile)
 
-/** A pane belonging to a tmux session, as listed by `tmux list-panes`. */
+/**
+ * A pane belonging to a tmux session, as listed by `tmux list-panes -a`,
+ * tagged with the name of the session it belongs to.
+ */
 export interface TmuxPane {
+  sessionName: string
   paneId: string
   pid: string
 }
 
 /** Runs a `tmux` subcommand against the server at `socketPath` and returns its stdout. */
-export type ExecFunction = (socketPath: string, arguments_: string[]) => string
+export type ExecFunction = (
+  socketPath: string,
+  arguments_: string[]
+) => Promise<string>
 
 /** Default exec implementation: invokes the real `tmux` client binary. */
-const defaultExec: ExecFunction = (socketPath, arguments_) =>
-  execFileSync('tmux', ['-S', socketPath, ...arguments_], { encoding: 'utf8' })
-
-/** Lists every tmux session on the server at `socketPath`. */
-export function listTmuxSessions(
-  socketPath: string,
-  exec: ExecFunction = defaultExec
-): TmuxSession[] {
-  const out = exec(socketPath, ['list-sessions', '-F', '#{session_name}'])
-  return out
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((name) => ({ name }))
+const defaultExec: ExecFunction = async (socketPath, arguments_) => {
+  const { stdout } = await execFileAsync('tmux', [
+    '-S',
+    socketPath,
+    ...arguments_,
+  ])
+  return stdout
 }
 
-/** Lists every pane of `sessionName`, including each pane's underlying process pid. */
-export function listTmuxPanes(
+/**
+ * Lists every pane across every tmux session on the server at `socketPath`
+ * in a single `tmux list-panes -a` call (avoiding one `list-sessions` plus
+ * one `list-panes` call per session). `tmux` exits non-zero both when the
+ * server has zero sessions and when no server is running at all on this
+ * socket — both are the bot's normal idle state (no panes to detect), not
+ * an error, so both are treated as an empty result rather than propagating
+ * the exec failure.
+ */
+export async function listAllTmuxPanes(
   socketPath: string,
-  sessionName: string,
   exec: ExecFunction = defaultExec
-): TmuxPane[] {
-  const out = exec(socketPath, [
-    'list-panes',
-    '-t',
-    sessionName,
-    '-F',
-    '#{pane_id} #{pane_pid}',
-  ])
+): Promise<TmuxPane[]> {
+  let out: string
+  try {
+    out = await exec(socketPath, [
+      'list-panes',
+      '-a',
+      '-F',
+      '#{session_name} #{pane_id} #{pane_pid}',
+    ])
+  } catch {
+    return []
+  }
   return out
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [paneId, pid] = line.split(' ')
-      return { paneId, pid }
+      const [sessionName, paneId, pid] = line.split(' ')
+      if (!sessionName || !paneId || !pid) {
+        throw new Error(`Unexpected tmux list-panes -a output line: ${line}`)
+      }
+      return { sessionName, paneId, pid }
     })
 }
 

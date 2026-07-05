@@ -44,13 +44,17 @@ async function main(): Promise<void> {
     ambiguityTracker: new AmbiguityTracker(),
     procRoot: config.claude.procRoot,
     socketPath,
+    resolvedPanes: new Set(),
+    registeringSessionIds: new Set(),
   }
 
   // Guards against overlapping cycles: if a cycle is still running when the
   // next tick fires (e.g. a slow Discord API call), the next tick is
-  // skipped rather than started concurrently, which would otherwise let
-  // two cycles both pass registerSession's existence check for the same
-  // sessionId and race to create duplicate Discord threads.
+  // skipped rather than started concurrently. Panes within a single cycle
+  // are now processed in parallel (see runDetectionCycle), so
+  // `registeringSessionIds` is the guard against duplicate Discord threads
+  // for the same sessionId; this outer flag only prevents two separate
+  // cycles from overlapping.
   let isCycleInProgress = false
   setInterval(() => {
     if (isCycleInProgress) return

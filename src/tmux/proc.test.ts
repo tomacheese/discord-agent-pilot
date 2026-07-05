@@ -14,18 +14,20 @@ function makeFakeProcRoot(): string {
 }
 
 describe('readProcessCwd', () => {
-  it('resolves the cwd symlink target', () => {
+  it('resolves the cwd symlink target', async () => {
     const procRoot = makeFakeProcRoot()
     const targetDirectory = mkdtempSync(path.join(tmpdir(), 'dap-cwd-'))
     mkdirSync(path.join(procRoot, '1234'))
     symlinkSync(targetDirectory, path.join(procRoot, '1234', 'cwd'))
 
-    expect(readProcessCwd(procRoot, '1234')).toBe(targetDirectory)
+    await expect(readProcessCwd(procRoot, '1234')).resolves.toBe(
+      targetDirectory
+    )
   })
 })
 
 describe('readProcessEnviron', () => {
-  it('parses NUL-separated KEY=VALUE entries', () => {
+  it('parses NUL-separated KEY=VALUE entries', async () => {
     const procRoot = makeFakeProcRoot()
     mkdirSync(path.join(procRoot, '1234'))
     writeFileSync(
@@ -33,7 +35,7 @@ describe('readProcessEnviron', () => {
       'CLAUDE_CONFIG_DIR=/home/user/.claude\0PATH=/usr/bin\0'
     )
 
-    const environment = readProcessEnviron(procRoot, '1234')
+    const environment = await readProcessEnviron(procRoot, '1234')
 
     expect(environment.CLAUDE_CONFIG_DIR).toBe('/home/user/.claude')
     expect(environment.PATH).toBe('/usr/bin')
@@ -41,7 +43,7 @@ describe('readProcessEnviron', () => {
 })
 
 describe('readProcessStartTicks and readBootTimeEpochMs', () => {
-  it('parses field 22 (starttime) from stat, tolerating a comm with spaces', () => {
+  it('parses field 22 (starttime) from stat, tolerating a comm with spaces', async () => {
     const procRoot = makeFakeProcRoot()
     mkdirSync(path.join(procRoot, '1234'))
     // comm field intentionally contains a space and parens to exercise the
@@ -60,7 +62,9 @@ describe('readProcessStartTicks and readBootTimeEpochMs', () => {
       'cpu  0 0 0 0\nbtime 1700000000\n'
     )
 
-    expect(readProcessStartTicks(procRoot, '1234')).toBe(123_456)
-    expect(readBootTimeEpochMs(procRoot)).toBe(1_700_000_000 * 1000)
+    await expect(readProcessStartTicks(procRoot, '1234')).resolves.toBe(123_456)
+    await expect(readBootTimeEpochMs(procRoot)).resolves.toBe(
+      1_700_000_000 * 1000
+    )
   })
 })

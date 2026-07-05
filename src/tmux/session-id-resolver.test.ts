@@ -61,7 +61,7 @@ function makeFakeProcRoot(startTimeEpochSec: number, pid: string): string {
 }
 
 describe('resolveSessionId', () => {
-  it('prefers sessions/<pid>.json when present', () => {
+  it('prefers sessions/<pid>.json when present', async () => {
     const containerConfigDir = mkdtempSync(
       join(tmpdir(), 'dap-resolver-config-')
     )
@@ -71,7 +71,7 @@ describe('resolveSessionId', () => {
       JSON.stringify({ sessionId: 'session-from-marker' })
     )
 
-    const result = resolveSessionId(
+    const result = await resolveSessionId(
       '/proc-unused',
       containerConfigDir,
       '1234',
@@ -85,7 +85,22 @@ describe('resolveSessionId', () => {
     })
   })
 
-  it('falls back to the single matching jsonl file when no marker exists', () => {
+  it('rejects a marker sessionId containing a path separator', async () => {
+    const containerConfigDir = mkdtempSync(
+      join(tmpdir(), 'dap-resolver-config-')
+    )
+    mkdirSync(join(containerConfigDir, 'sessions'), { recursive: true })
+    writeFileSync(
+      join(containerConfigDir, 'sessions', '1234.json'),
+      JSON.stringify({ sessionId: '../../etc/passwd' })
+    )
+
+    await expect(
+      resolveSessionId('/proc-unused', containerConfigDir, '1234', '/cwd', 3000)
+    ).rejects.toThrow()
+  })
+
+  it('falls back to the single matching jsonl file when no marker exists', async () => {
     const containerConfigDir = mkdtempSync(
       join(tmpdir(), 'dap-resolver-config-')
     )
@@ -97,7 +112,7 @@ describe('resolveSessionId', () => {
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'session-only.jsonl'), '{}')
 
-    const result = resolveSessionId(
+    const result = await resolveSessionId(
       '/proc-unused',
       containerConfigDir,
       '1234',
@@ -108,12 +123,12 @@ describe('resolveSessionId', () => {
     expect(result).toEqual({ kind: 'resolved', sessionId: 'session-only' })
   })
 
-  it('returns unresolved when the project directory does not exist', () => {
+  it('returns unresolved when the project directory does not exist', async () => {
     const containerConfigDir = mkdtempSync(
       join(tmpdir(), 'dap-resolver-config-')
     )
 
-    const result = resolveSessionId(
+    const result = await resolveSessionId(
       '/proc-unused',
       containerConfigDir,
       '1234',
@@ -124,7 +139,7 @@ describe('resolveSessionId', () => {
     expect(result).toEqual({ kind: 'unresolved' })
   })
 
-  it('picks the jsonl file closest to the process start time when unambiguous', () => {
+  it('picks the jsonl file closest to the process start time when unambiguous', async () => {
     const containerConfigDir = mkdtempSync(
       join(tmpdir(), 'dap-resolver-config-')
     )
@@ -145,7 +160,7 @@ describe('resolveSessionId', () => {
     // control over birthtime requires OS-level tooling unavailable in a
     // portable test, so we assert the resolver doesn't throw and returns
     // one of the two candidates.
-    const result = resolveSessionId(
+    const result = await resolveSessionId(
       procRoot,
       containerConfigDir,
       '1234',
@@ -159,7 +174,7 @@ describe('resolveSessionId', () => {
     }
   })
 
-  it('returns ambiguous when top two candidates are within the threshold', () => {
+  it('returns ambiguous when top two candidates are within the threshold', async () => {
     const containerConfigDir = mkdtempSync(
       join(tmpdir(), 'dap-resolver-config-')
     )
@@ -174,7 +189,7 @@ describe('resolveSessionId', () => {
     writeFileSync(join(projectDir, 'b.jsonl'), '{}')
 
     // With an effectively infinite threshold, any two candidates count as ambiguous.
-    const result = resolveSessionId(
+    const result = await resolveSessionId(
       procRoot,
       containerConfigDir,
       '1234',

@@ -2,10 +2,14 @@ import { ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js'
 import type { Config } from '../config/schema.js'
 import { isAllowedUser } from '../discord/permissions.js'
 
+/** How long to wait for a human to resolve an ambiguous sessionId prompt before giving up (§4 step 5). */
+const AMBIGUITY_PROMPT_TIMEOUT_MS = 5 * 60 * 1000
+
 /** Tracks tmux-detected sessions still waiting on ambiguity resolution (§4 step 5). */
 export class AmbiguityTracker {
   private readonly pending = new Map<string, string[]>()
 
+  /** Builds the internal map key identifying a tmux session/pane pair. */
   private key(tmuxSession: string, panePid: string): string {
     return `${tmuxSession}:${panePid}`
   }
@@ -37,19 +41,25 @@ interface SelectInteraction {
   reply: (options: { content: string; ephemeral: boolean }) => Promise<void>
 }
 
-/** A collector of select-menu interactions on a posted message. */
+/**
+ * A collector of select-menu interactions on a posted message. The `end`
+ * callback's parameter order (`collected` first, `reason` second) mirrors
+ * discord.js's real `Collector` event signature, so a caller relying on
+ * this interface receives the timeout reason in the correct position.
+ */
 interface ComponentCollector {
   on(
     event: 'collect',
     callback: (interaction: SelectInteraction) => void | Promise<void>
   ): void
+  on(event: 'end', callback: (collected: unknown, reason: string) => void): void
 }
 
 /** A posted Discord message capable of collecting component interactions. */
 interface PromptMessage {
-  createMessageComponentCollector(
-    options: Record<string, never>
-  ): ComponentCollector
+  createMessageComponentCollector(options: {
+    time?: number
+  }): ComponentCollector
 }
 
 /** The minimal channel interface `promptSessionIdSelection` needs to post a Select menu. */
@@ -61,13 +71,15 @@ export interface PromptChannel {
  * Posts a Select menu to `channel` listing `candidates` as sessionId
  * options, and resolves with the sessionId the first *allowed* user
  * selects (§4 step 5). Selections from non-allowed users are rejected with
- * an ephemeral reply and do not resolve the promise.
+ * an ephemeral reply and do not resolve the promise. If no allowed user
+ * selects a candidate within `AMBIGUITY_PROMPT_TIMEOUT_MS`, resolves with
+ * `undefined` instead of hanging indefinitely.
  */
 export async function promptSessionIdSelection(
   channel: PromptChannel,
   candidates: string[],
   config: Config
-): Promise<string> {
+): Promise<string | undefined> {
   const menu = new StringSelectMenuBuilder()
     .setCustomId('session-id-selection')
     .setPlaceholder('Select the matching Claude Code session')
@@ -83,7 +95,9 @@ export async function promptSessionIdSelection(
   })
 
   return new Promise((resolve) => {
-    const collector = message.createMessageComponentCollector({})
+    const collector = message.createMessageComponentCollector({
+      time: AMBIGUITY_PROMPT_TIMEOUT_MS,
+    })
     collector.on('collect', async (interaction) => {
       if (!isAllowedUser(interaction.user.id, config)) {
         try {
@@ -98,6 +112,11 @@ export async function promptSessionIdSelection(
         return
       }
       resolve(interaction.values[0])
+    })
+    collector.on('end', (_collected, reason) => {
+      if (reason === 'time') {
+        resolve(undefined)
+      }
     })
   })
 }
