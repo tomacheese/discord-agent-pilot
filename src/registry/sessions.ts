@@ -41,7 +41,10 @@ export function findSessionById(
 /**
  * Inserts a new session row. Throws if a row with the same `id` already exists.
  */
-export function insertSession(db: Database.Database, session: SessionRow): void {
+export function insertSession(
+  db: Database.Database,
+  session: SessionRow
+): void {
   db.prepare(
     `INSERT INTO sessions
        (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid, cwd,

@@ -12,7 +12,10 @@ function makeConfig(allowedUserIds: string[]): Config {
     tmux: { pollIntervalMs: 3000, socketDir: '/tmp/tmux-host' },
     sessionResolution: { ambiguityThresholdMs: 3000 },
     claude: {
-      defaultConfigDir: { hostPath: '/home/user/.claude', containerPath: '/host/claude-config' },
+      defaultConfigDir: {
+        hostPath: '/home/user/.claude',
+        containerPath: '/host/claude-config',
+      },
       procRoot: '/proc',
     },
   }
@@ -24,6 +27,8 @@ describe('isAllowedUser', () => {
   })
 
   it('returns false for a user not in allowedUserIds', () => {
-    expect(isAllowedUser('user-3', makeConfig(['user-1', 'user-2']))).toBe(false)
+    expect(isAllowedUser('user-3', makeConfig(['user-1', 'user-2']))).toBe(
+      false
+    )
   })
 })

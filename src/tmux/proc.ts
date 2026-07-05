@@ -7,7 +7,10 @@ export function readProcessCwd(procRoot: string, pid: string): string {
 }
 
 /** Parses `${procRoot}/<pid>/environ` (NUL-separated `KEY=VALUE` entries) into a plain object. */
-export function readProcessEnviron(procRoot: string, pid: string): Record<string, string> {
+export function readProcessEnviron(
+  procRoot: string,
+  pid: string
+): Record<string, string> {
   const raw = readFileSync(path.join(procRoot, pid, 'environ'), 'utf8')
   const environment: Record<string, string> = {}
   for (const entry of raw.split('\0')) {

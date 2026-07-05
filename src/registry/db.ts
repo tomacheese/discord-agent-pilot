@@ -4,7 +4,10 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'migrations')
+const MIGRATIONS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'migrations'
+)
 
 /**
  * Applies every `migrations/NNN_*.sql` file whose sequence number is

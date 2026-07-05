@@ -12,7 +12,8 @@ function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
     tmuxPanePid: '1234',
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
-    jsonlPath: '/host/claude-config/projects/-mnt-ssd-repos-example/session-1.jsonl',
+    jsonlPath:
+      '/host/claude-config/projects/-mnt-ssd-repos-example/session-1.jsonl',
     jsonlOffset: 0,
     status: 'discovered',
     createdAt: 1000,

@@ -31,13 +31,12 @@ claude:
 `
 
 function writeTemporaryConfig(content: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   const directory = mkdtempSync(join(tmpdir(), 'dap-config-'))
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
   const filePath = join(directory, 'config.yaml')
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
   writeFileSync(filePath, content, 'utf8')
-  return filePath as string
+  return filePath
 }
 
 describe('loadConfig', () => {
@@ -45,7 +44,10 @@ describe('loadConfig', () => {
     const path = writeTemporaryConfig(VALID_YAML)
     const config = loadConfig(path)
     expect(config.guildId).toBe('123456789012345678')
-    expect(config.parentChannel).toEqual({ type: 'forum', id: '234567890123456789' })
+    expect(config.parentChannel).toEqual({
+      type: 'forum',
+      id: '234567890123456789',
+    })
     expect(config.allowedUserIds).toEqual(['345678901234567890'])
     expect(config.tmux.pollIntervalMs).toBe(3000)
   })

@@ -1,5 +1,8 @@
 # esbuild is a transitive build dependency of tsx (dependencies) and
 # vitest/vite (devDependencies); its postinstall script copies the
 # platform-specific native binary into place, so it must be allowed to run.
+# better-sqlite3 requires a native build/prebuild-install step to obtain its
+# native binding, so it must be allowed to run as well.
 allowBuilds:
+  better-sqlite3: true
   esbuild: true

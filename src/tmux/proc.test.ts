@@ -55,7 +55,10 @@ describe('readProcessStartTicks and readBootTimeEpochMs', () => {
     fields[19] = '123456'
     const statLine = `1234 (some proc) ${fields.join(' ')}`
     writeFileSync(path.join(procRoot, '1234', 'stat'), statLine)
-    writeFileSync(path.join(procRoot, 'stat'), 'cpu  0 0 0 0\nbtime 1700000000\n')
+    writeFileSync(
+      path.join(procRoot, 'stat'),
+      'cpu  0 0 0 0\nbtime 1700000000\n'
+    )
 
     expect(readProcessStartTicks(procRoot, '1234')).toBe(123_456)
     expect(readBootTimeEpochMs(procRoot)).toBe(1_700_000_000 * 1000)

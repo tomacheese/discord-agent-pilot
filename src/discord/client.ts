@@ -19,7 +19,7 @@ export interface DiscordClientHandlers {
  */
 export function createDiscordClient(
   config: Config,
-  handlers: DiscordClientHandlers = {},
+  handlers: DiscordClientHandlers = {}
 ): Client {
   const client = new Client({
     intents: [

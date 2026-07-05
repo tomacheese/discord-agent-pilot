@@ -22,7 +22,7 @@
   "devDependencies": {
     "@book000/eslint-config": "1.15.37",
     "@types/better-sqlite3": "7.6.13",
-    "@types/node": "26.1.0",
+    "@types/node": "24.13.2",
     "@vitest/coverage-v8": "4.1.9",
     "eslint": "10.6.0",
     "npm-run-all2": "9.0.2",

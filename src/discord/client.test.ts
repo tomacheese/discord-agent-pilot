@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Message } from 'discord.js'
+import type { Message, OmitPartialGroupDMChannel } from 'discord.js'
 import type { Config } from '../config/schema.js'
 import { createDiscordClient } from './client.js'
 
@@ -13,21 +13,31 @@ function makeConfig(allowedUserIds: string[]): Config {
     tmux: { pollIntervalMs: 3000, socketDir: '/tmp/tmux-host' },
     sessionResolution: { ambiguityThresholdMs: 3000 },
     claude: {
-      defaultConfigDir: { hostPath: '/home/user/.claude', containerPath: '/host/claude-config' },
+      defaultConfigDir: {
+        hostPath: '/home/user/.claude',
+        containerPath: '/host/claude-config',
+      },
       procRoot: '/proc',
     },
   }
 }
 
-// eslint-disable-next-line unicorn/consistent-boolean-name
-function makeMessage(userId: string, bot: boolean): Message {
-  return { author: { id: userId, bot } } as unknown as Message
+function makeMessage(
+  userId: string,
+  // eslint-disable-next-line unicorn/consistent-boolean-name -- mirrors discord.js's `Message.author.bot` field name
+  bot: boolean
+): OmitPartialGroupDMChannel<Message> {
+  return {
+    author: { id: userId, bot },
+  } as unknown as OmitPartialGroupDMChannel<Message>
 }
 
 describe('createDiscordClient', () => {
   it('invokes onAllowedMessage for a message from an allowed user', () => {
     const onAllowedMessage = vi.fn()
-    const client = createDiscordClient(makeConfig(['user-1']), { onAllowedMessage })
+    const client = createDiscordClient(makeConfig(['user-1']), {
+      onAllowedMessage,
+    })
 
     client.emit('messageCreate', makeMessage('user-1', false))
 
@@ -36,7 +46,9 @@ describe('createDiscordClient', () => {
 
   it('does not invoke onAllowedMessage for a message from a disallowed user', () => {
     const onAllowedMessage = vi.fn()
-    const client = createDiscordClient(makeConfig(['user-1']), { onAllowedMessage })
+    const client = createDiscordClient(makeConfig(['user-1']), {
+      onAllowedMessage,
+    })
 
     client.emit('messageCreate', makeMessage('user-2', false))
 
@@ -45,7 +57,9 @@ describe('createDiscordClient', () => {
 
   it('does not invoke onAllowedMessage for a message from a bot', () => {
     const onAllowedMessage = vi.fn()
-    const client = createDiscordClient(makeConfig(['user-1']), { onAllowedMessage })
+    const client = createDiscordClient(makeConfig(['user-1']), {
+      onAllowedMessage,
+    })
 
     client.emit('messageCreate', makeMessage('user-1', true))
 

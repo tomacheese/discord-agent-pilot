@@ -8,7 +8,7 @@ import { configSchema, type Config } from './schema.js'
  */
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, 'utf8')
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+
   const parsed: unknown = parse(raw)
   return configSchema.parse(parsed)
 }

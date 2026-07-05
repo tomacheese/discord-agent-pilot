@@ -6,7 +6,9 @@ describe('openRegistryDb', () => {
   it('creates the sessions table', () => {
     const db = openRegistryDb(':memory:')
     const row = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sessions'"
+      )
       .get()
     expect(row).toBeDefined()
     db.close()
