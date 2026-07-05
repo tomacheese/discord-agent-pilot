@@ -68,3 +68,18 @@ export async function findClaudeProcessPid(
   }
   return undefined
 }
+
+/**
+ * Cheaply checks whether `pid` is still alive and still named `claude`, by
+ * reading only that single pid's `comm` file (no process tree walk). Used
+ * to invalidate a pane-level "already resolved" cache entry without paying
+ * the cost of a full `findClaudeProcessPid` search: if the cached Claude
+ * process has exited (or the pid was reused by an unrelated process), the
+ * caller should treat the cache entry as stale and re-run full resolution.
+ */
+export async function isClaudeProcessAlive(
+  procRoot: string,
+  pid: string
+): Promise<boolean> {
+  return (await readComm(procRoot, pid)) === 'claude'
+}

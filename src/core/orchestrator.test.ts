@@ -11,6 +11,7 @@ vi.mock('../tmux/list-sessions.js', () => ({
 }))
 vi.mock('../tmux/process-tree.js', () => ({
   findClaudeProcessPid: vi.fn(),
+  isClaudeProcessAlive: vi.fn(),
 }))
 vi.mock('../tmux/proc.js', () => ({
   readProcessCwd: vi.fn(),
@@ -22,7 +23,10 @@ vi.mock('../tmux/session-id-resolver.js', () => ({
 }))
 
 import { listAllTmuxPanes } from '../tmux/list-sessions.js'
-import { findClaudeProcessPid } from '../tmux/process-tree.js'
+import {
+  findClaudeProcessPid,
+  isClaudeProcessAlive,
+} from '../tmux/process-tree.js'
 import { readProcessCwd, readProcessEnviron } from '../tmux/proc.js'
 import {
   resolveContainerConfigDir,
@@ -69,7 +73,7 @@ function makeDeps(): {
     ambiguityTracker: new AmbiguityTracker(),
     procRoot: '/proc',
     socketPath: '/tmp/tmux-host/default',
-    resolvedPanes: new Set(),
+    resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
   }
   return { deps, createSessionThread, promptSend }
@@ -80,6 +84,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue([{ sessionName: 'tmux-1', paneId: '%0', pid: '100' }])
   vi.mocked(findClaudeProcessPid).mockReset().mockResolvedValue('300')
+  vi.mocked(isClaudeProcessAlive).mockReset().mockResolvedValue(true)
   vi.mocked(readProcessCwd)
     .mockReset()
     .mockResolvedValue('/mnt/ssd/repos/example')
@@ -150,18 +155,39 @@ describe('runDetectionCycle', () => {
     expect(createSessionThread).not.toHaveBeenCalled()
   })
 
-  it('skips the resolution pipeline for a pane already in resolvedPanes', async () => {
+  it('skips the resolution pipeline for a pane whose cached claude process is still alive', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
     })
     const { deps, createSessionThread } = makeDeps()
-    deps.resolvedPanes.add('tmux-1:100')
+    deps.resolvedPanes.set('tmux-1:100', '300')
 
     await runDetectionCycle(deps, makeConfig())
 
+    expect(isClaudeProcessAlive).toHaveBeenCalledWith('/proc', '300')
     expect(findClaudeProcessPid).not.toHaveBeenCalled()
     expect(createSessionThread).not.toHaveBeenCalled()
+  })
+
+  it('re-runs resolution when the pane cache is stale (previous claude process exited)', async () => {
+    vi.mocked(isClaudeProcessAlive).mockResolvedValue(false)
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-2',
+    })
+    const { deps, createSessionThread } = makeDeps()
+    // A prior session ('session-1', pid 300) was registered in this pane;
+    // that process has since exited and a new claude process (pid 300,
+    // reused by mockResolvedValue('300') as the "new" process for
+    // simplicity) started in the same pane.
+    deps.resolvedPanes.set('tmux-1:100', '300')
+
+    await runDetectionCycle(deps, makeConfig())
+
+    expect(findClaudeProcessPid).toHaveBeenCalledWith('/proc', '100')
+    expect(createSessionThread).toHaveBeenCalledWith('session-2')
+    expect(findSessionById(deps.db, 'session-2')).toBeDefined()
   })
 
   it('prompts for a selection when resolution is ambiguous, then registers the chosen sessionId', async () => {

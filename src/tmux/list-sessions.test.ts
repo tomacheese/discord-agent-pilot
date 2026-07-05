@@ -8,7 +8,7 @@ describe('listAllTmuxPanes', () => {
   it('parses session name, pane id, and pid per line', async () => {
     const exec = vi
       .fn()
-      .mockResolvedValue('session-a %0 1111\nsession-b %1 2222\n')
+      .mockResolvedValue('session-a\t%0\t1111\nsession-b\t%1\t2222\n')
 
     const panes = await listAllTmuxPanes('/tmp/tmux-host/default', exec)
 
@@ -20,7 +20,17 @@ describe('listAllTmuxPanes', () => {
       'list-panes',
       '-a',
       '-F',
-      '#{session_name} #{pane_id} #{pane_pid}',
+      '#{session_name}\t#{pane_id}\t#{pane_pid}',
+    ])
+  })
+
+  it('parses a session name containing a space without misaligning fields', async () => {
+    const exec = vi.fn().mockResolvedValue('my project\t%0\t1111\n')
+
+    const panes = await listAllTmuxPanes('/tmp/tmux-host/default', exec)
+
+    expect(panes).toEqual([
+      { sessionName: 'my project', paneId: '%0', pid: '1111' },
     ])
   })
 
@@ -31,7 +41,7 @@ describe('listAllTmuxPanes', () => {
   })
 
   it('throws on an unexpected output line missing a field', async () => {
-    const exec = vi.fn().mockResolvedValue('session-a %0\n')
+    const exec = vi.fn().mockResolvedValue('session-a\t%0\n')
 
     await expect(
       listAllTmuxPanes('/tmp/tmux-host/default', exec)

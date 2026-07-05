@@ -9,7 +9,10 @@ import {
 } from '../registry/sessions.js'
 import { listAllTmuxPanes } from '../tmux/list-sessions.js'
 import { readProcessCwd, readProcessEnviron } from '../tmux/proc.js'
-import { findClaudeProcessPid } from '../tmux/process-tree.js'
+import {
+  findClaudeProcessPid,
+  isClaudeProcessAlive,
+} from '../tmux/process-tree.js'
 import {
   resolveContainerConfigDir,
   resolveSessionId,
@@ -37,10 +40,15 @@ export interface OrchestratorDeps {
   socketPath: string
   /**
    * Panes (keyed by `${tmuxSession}:${panePid}`) whose sessionId has
-   * already been resolved and registered, so their expensive resolution
-   * pipeline can be skipped on subsequent detection cycles.
+   * already been resolved and registered, mapped to the Claude process pid
+   * that was registered. On a later cycle the cached pid is re-checked
+   * cheaply via `isClaudeProcessAlive` before skipping the full resolution
+   * pipeline: if the pane's shell (long-lived `panePid`) now hosts a
+   * *different* `claude` invocation than the one that was cached (the
+   * previous session exited and a new one started), the cache entry is
+   * stale and the pane must be re-resolved rather than skipped forever.
    */
-  resolvedPanes: Set<string>
+  resolvedPanes: Map<string, string>
   /**
    * SessionIds currently mid-registration, guarding against two panes that
    * resolve to the same sessionId within one parallelized detection cycle
@@ -80,6 +88,7 @@ async function registerSession(
   sessionId: string,
   tmuxSession: string,
   panePid: string,
+  claudePid: string,
   cwd: string,
   containerConfigDir: string
 ): Promise<void> {
@@ -105,7 +114,7 @@ async function registerSession(
       updatedAt: now,
     }
     insertSession(deps.db, row)
-    deps.resolvedPanes.add(paneKey(tmuxSession, panePid))
+    deps.resolvedPanes.set(paneKey(tmuxSession, panePid), claudePid)
   } finally {
     deps.registeringSessionIds.delete(sessionId)
   }
@@ -121,7 +130,13 @@ async function processPane(
   tmuxSession: string,
   panePid: string
 ): Promise<void> {
-  if (deps.resolvedPanes.has(paneKey(tmuxSession, panePid))) return
+  const cachedClaudePid = deps.resolvedPanes.get(paneKey(tmuxSession, panePid))
+  if (
+    cachedClaudePid !== undefined &&
+    (await isClaudeProcessAlive(deps.procRoot, cachedClaudePid))
+  ) {
+    return
+  }
 
   const claudePid = await findClaudeProcessPid(deps.procRoot, panePid)
   if (!claudePid) return
@@ -175,6 +190,7 @@ async function processPane(
       sessionId,
       tmuxSession,
       panePid,
+      claudePid,
       cwd,
       containerConfigDir
     )
@@ -187,6 +203,7 @@ async function processPane(
     resolution.sessionId,
     tmuxSession,
     panePid,
+    claudePid,
     cwd,
     containerConfigDir
   )

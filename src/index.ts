@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     ambiguityTracker: new AmbiguityTracker(),
     procRoot: config.claude.procRoot,
     socketPath,
-    resolvedPanes: new Set(),
+    resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
   }
 

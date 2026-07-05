@@ -40,6 +40,14 @@ const defaultExec: ExecFunction = async (socketPath, arguments_) => {
  * an error, so both are treated as an empty result rather than propagating
  * the exec failure.
  */
+/**
+ * Field delimiter for the `tmux list-panes -F` format string below. A tab
+ * cannot appear in a tmux session name (tmux itself rejects it), unlike a
+ * plain space — `tmux rename-session "my project"` is valid and would
+ * otherwise silently misalign the 3-way destructure in `listAllTmuxPanes`.
+ */
+const FIELD_DELIMITER = '\t'
+
 export async function listAllTmuxPanes(
   socketPath: string,
   exec: ExecFunction = defaultExec
@@ -50,7 +58,10 @@ export async function listAllTmuxPanes(
       'list-panes',
       '-a',
       '-F',
-      '#{session_name} #{pane_id} #{pane_pid}',
+      // `#{...}` is tmux's own format-string syntax, not a JS template
+      // literal typo.
+      // eslint-disable-next-line unicorn/no-incorrect-template-string-interpolation
+      `#{session_name}${FIELD_DELIMITER}#{pane_id}${FIELD_DELIMITER}#{pane_pid}`,
     ])
   } catch {
     return []
@@ -59,7 +70,7 @@ export async function listAllTmuxPanes(
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [sessionName, paneId, pid] = line.split(' ')
+      const [sessionName, paneId, pid] = line.split(FIELD_DELIMITER)
       if (!sessionName || !paneId || !pid) {
         throw new Error(`Unexpected tmux list-panes -a output line: ${line}`)
       }
