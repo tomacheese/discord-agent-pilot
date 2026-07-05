@@ -65,4 +65,26 @@ describe('resolveTmuxSocketPath', () => {
     )
     expect(() => resolveTmuxSocketPath(socketDirectory)).toThrow()
   })
+
+  it('prefers the socket named "default" when multiple sockets exist', () => {
+    const socketDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-tmux-socket-multi-')
+    )
+    writeFileSync(path.join(socketDirectory, 'other-user'), '')
+    writeFileSync(path.join(socketDirectory, 'default'), '')
+
+    expect(resolveTmuxSocketPath(socketDirectory)).toBe(
+      path.join(socketDirectory, 'default')
+    )
+  })
+
+  it('throws when multiple sockets exist and none is named "default"', () => {
+    const socketDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-tmux-socket-ambiguous-')
+    )
+    writeFileSync(path.join(socketDirectory, 'user-a'), '')
+    writeFileSync(path.join(socketDirectory, 'user-b'), '')
+
+    expect(() => resolveTmuxSocketPath(socketDirectory)).toThrow()
+  })
 })

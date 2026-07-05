@@ -64,6 +64,11 @@ function makeFakeChannel() {
         }
       }
     ),
+    // Mirrors discord.js's real Collector: stopping it fires its own 'end'
+    // event with the given reason, same as the production code relies on.
+    stop: vi.fn((reason?: string) => {
+      endCallback?.(undefined, reason ?? 'user')
+    }),
   }
   const message = {
     createMessageComponentCollector: vi.fn().mockReturnValue(collector),
@@ -73,6 +78,7 @@ function makeFakeChannel() {
   }
   return {
     channel,
+    collector,
     emitCollect: (interaction: FakeCollectInteraction) =>
       collectCallback?.(interaction),
     emitEnd: (reason: string) => endCallback?.(undefined, reason),
@@ -81,7 +87,7 @@ function makeFakeChannel() {
 
 describe('promptSessionIdSelection', () => {
   it('resolves with the sessionId selected by an allowed user', async () => {
-    const { channel, emitCollect } = makeFakeChannel()
+    const { channel, collector, emitCollect } = makeFakeChannel()
     const resultPromise = promptSessionIdSelection(
       channel,
       ['session-a', 'session-b'],
@@ -99,6 +105,9 @@ describe('promptSessionIdSelection', () => {
     })
 
     await expect(resultPromise).resolves.toBe('session-b')
+    // The collector must be stopped once a valid selection is made, rather
+    // than left running until AMBIGUITY_PROMPT_TIMEOUT_MS elapses.
+    expect(collector.stop).toHaveBeenCalled()
   })
 
   it('rejects a disallowed user selection with an ephemeral reply and keeps waiting', async () => {

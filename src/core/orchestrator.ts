@@ -65,15 +65,19 @@ function paneKey(tmuxSession: string, panePid: string): string {
 
 /**
  * Returns true if `cwd` is inside one of `workspaceRoots` (§6). A root
- * matches if `cwd` equals it exactly or is a subdirectory of it.
+ * matches if `cwd` equals it exactly or is a subdirectory of it. Trailing
+ * slashes on a configured root are trimmed first, since otherwise a root
+ * like `/mnt/ssd/repos/` would build the prefix `/mnt/ssd/repos//` and never
+ * match any real `cwd`.
  */
 function isWithinWorkspaceRoots(
   cwd: string,
   workspaceRoots: string[]
 ): boolean {
-  return workspaceRoots.some(
-    (root) => cwd === root || cwd.startsWith(`${root}/`)
-  )
+  return workspaceRoots.some((root) => {
+    const normalizedRoot = root.endsWith('/') ? root.slice(0, -1) : root
+    return cwd === normalizedRoot || cwd.startsWith(`${normalizedRoot}/`)
+  })
 }
 
 /**

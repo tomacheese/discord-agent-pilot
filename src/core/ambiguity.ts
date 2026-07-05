@@ -53,6 +53,8 @@ interface ComponentCollector {
     callback: (interaction: SelectInteraction) => void | Promise<void>
   ): void
   on(event: 'end', callback: (collected: unknown, reason: string) => void): void
+  /** Stops the collector early, triggering its `end` event with the given reason. */
+  stop(reason?: string): void
 }
 
 /** A posted Discord message capable of collecting component interactions. */
@@ -95,6 +97,12 @@ export async function promptSessionIdSelection(
   })
 
   return new Promise((resolve) => {
+    // Guards against `resolve` being called twice: `end` still fires (with
+    // reason 'user' rather than 'time') after `collector.stop()` below, and
+    // without this guard that second call would try to resolve an
+    // already-settled promise (a silent no-op, but relying on that is
+    // fragile and obscures the intended single-resolution contract).
+    let hasSettled = false
     const collector = message.createMessageComponentCollector({
       time: AMBIGUITY_PROMPT_TIMEOUT_MS,
     })
@@ -111,12 +119,17 @@ export async function promptSessionIdSelection(
         }
         return
       }
+      hasSettled = true
+      // Stop the collector immediately so it doesn't keep listening for
+      // (and dispatching to allowed/disallowed-user checks against) further
+      // interactions on this message until the timeout elapses.
+      collector.stop('user')
       resolve(interaction.values[0])
     })
     collector.on('end', (_collected, reason) => {
-      if (reason === 'time') {
-        resolve(undefined)
-      }
+      if (hasSettled || reason !== 'time') return
+      hasSettled = true
+      resolve(undefined)
     })
   })
 }

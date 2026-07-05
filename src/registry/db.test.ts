@@ -1,5 +1,8 @@
 /* eslint-disable unicorn/name-replacements */
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openRegistryDb } from './db.js'
 
 describe('openRegistryDb', () => {
@@ -21,13 +24,27 @@ describe('openRegistryDb', () => {
     db.close()
   })
 
-  it('is idempotent when opened twice against the same file', () => {
-    const db1 = openRegistryDb(':memory:')
-    db1.close()
-    const db2 = openRegistryDb(':memory:')
-    const version = db2.pragma('user_version', { simple: true })
-    expect(version).toBe(1)
-    db2.close()
+  describe('against a real file', () => {
+    let tempDir: string
+    let dbPath: string
+
+    beforeEach(() => {
+      tempDir = mkdtempSync(path.join(tmpdir(), 'registry-db-test-'))
+      dbPath = path.join(tempDir, 'registry.db')
+    })
+
+    afterEach(() => {
+      rmSync(tempDir, { recursive: true, force: true })
+    })
+
+    it('is idempotent when opened twice against the same file', () => {
+      const db1 = openRegistryDb(dbPath)
+      db1.close()
+      const db2 = openRegistryDb(dbPath)
+      const version = db2.pragma('user_version', { simple: true })
+      expect(version).toBe(1)
+      db2.close()
+    })
   })
 })
 /* eslint-enable unicorn/name-replacements */

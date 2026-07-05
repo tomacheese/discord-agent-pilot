@@ -80,13 +80,26 @@ export async function listAllTmuxPanes(
 
 /**
  * Resolves the tmux server socket file inside `socketDirectory` (bind-mounted
- * from the host's tmux socket directory, §6/§13.1). Throws if no socket
- * file is found.
+ * from the host's tmux socket directory, §6/§13.1). Prefers a socket named
+ * `default` (tmux's own default socket name) when present; otherwise
+ * requires exactly one candidate, since picking an arbitrary entry from a
+ * directory with multiple sockets (e.g. multiple tmux servers/users) would
+ * be nondeterministic and could silently attach to the wrong server. Throws
+ * if no socket file is found, or if multiple non-`default` candidates exist.
  */
 export function resolveTmuxSocketPath(socketDirectory: string): string {
-  const [socketFile] = readdirSync(socketDirectory)
-  if (!socketFile) {
+  const socketFiles = readdirSync(socketDirectory)
+  if (socketFiles.length === 0) {
     throw new Error(`No tmux socket found in ${socketDirectory}`)
   }
-  return path.join(socketDirectory, socketFile)
+  if (socketFiles.includes('default')) {
+    return path.join(socketDirectory, 'default')
+  }
+  if (socketFiles.length > 1) {
+    throw new Error(
+      `Multiple tmux sockets found in ${socketDirectory} and none is named ` +
+        `"default": ${socketFiles.join(', ')}`
+    )
+  }
+  return path.join(socketDirectory, socketFiles[0])
 }

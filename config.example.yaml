@@ -16,6 +16,6 @@ sessionResolution:
   ambiguityThresholdMs: 3000
 claude:
   defaultConfigDir:
-    hostPath: '~/.claude'
+    hostPath: '/home/user/.claude' # `~` はサポートされないため絶対パスを指定する
     containerPath: '/host/claude-config'
   procRoot: '/host/proc' # compose.yaml で /proc をここにマウントするため、コンテナ自身の /proc ではなくホストの /proc を指す

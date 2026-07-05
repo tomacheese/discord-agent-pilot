@@ -207,6 +207,7 @@ describe('runDetectionCycle', () => {
             })
           }
         },
+        stop: vi.fn(),
       }),
     })
 
