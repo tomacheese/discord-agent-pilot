@@ -1,11 +1,10 @@
-/* eslint-disable unicorn/import-style,unicorn/name-replacements,unicorn/no-array-sort */
 import Database from 'better-sqlite3'
 import { readFileSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const MIGRATIONS_DIR = join(
-  dirname(fileURLToPath(import.meta.url)),
+const MIGRATIONS_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
   'migrations'
 )
 
@@ -32,11 +31,11 @@ function applyMigrations(db: Database.Database): void {
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((file) => file.endsWith('.sql'))
     .map((file) => ({ file, version: parseMigrationVersion(file) }))
-    .sort((a, b) => a.version - b.version)
+    .toSorted((a, b) => a.version - b.version)
   const currentVersion = db.pragma('user_version', { simple: true }) as number
   for (const { file, version } of files) {
     if (version <= currentVersion) continue
-    const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8')
+    const sql = readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8')
     db.exec(sql)
     db.pragma(`user_version = ${version}`)
   }
@@ -44,12 +43,11 @@ function applyMigrations(db: Database.Database): void {
 
 /**
  * Opens (creating if necessary) the session registry SQLite database at
- * `path` and applies any pending migrations from `migrations/`.
+ * `dbPath` and applies any pending migrations from `migrations/`.
  */
-export function openRegistryDb(path: string): Database.Database {
-  const db = new Database(path)
+export function openRegistryDb(dbPath: string): Database.Database {
+  const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   applyMigrations(db)
   return db
 }
-/* eslint-enable unicorn/import-style,unicorn/name-replacements,unicorn/no-array-sort */

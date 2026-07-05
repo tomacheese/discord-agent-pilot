@@ -1,9 +1,9 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { Client, GatewayIntentBits, type ForumChannel } from 'discord.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { createParentChannel } from './discord/parent-channel.js'
-import { createDiscordClient } from './discord/client.js'
-import type { Config } from './config/schema.js'
+import { createParentChannel } from './discord/parent-channel'
+import { createDiscordClient } from './discord/client'
+import type { Config } from './config/schema'
 
 const PORT = 34_567
 const BASE_URL = `http://127.0.0.1:${PORT}`

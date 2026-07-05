@@ -1,10 +1,8 @@
-/* eslint-disable unicorn/import-style */
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from './load.js'
-/* eslint-enable unicorn/import-style */
+import { loadConfig } from './load'
 
 const VALID_YAML = `
 guildId: "123456789012345678"
@@ -31,9 +29,9 @@ claude:
 `
 
 function writeTemporaryConfig(content: string): string {
-  const directory = mkdtempSync(join(tmpdir(), 'dap-config-'))
+  const directory = mkdtempSync(path.join(tmpdir(), 'dap-config-'))
 
-  const filePath = join(directory, 'config.yaml')
+  const filePath = path.join(directory, 'config.yaml')
 
   writeFileSync(filePath, content, 'utf8')
   return filePath
@@ -41,8 +39,8 @@ function writeTemporaryConfig(content: string): string {
 
 describe('loadConfig', () => {
   it('parses a valid config.yaml', () => {
-    const path = writeTemporaryConfig(VALID_YAML)
-    const config = loadConfig(path)
+    const configPath = writeTemporaryConfig(VALID_YAML)
+    const config = loadConfig(configPath)
     expect(config.guildId).toBe('123456789012345678')
     expect(config.parentChannel).toEqual({
       type: 'forum',
@@ -53,8 +51,8 @@ describe('loadConfig', () => {
   })
 
   it('throws when a required field is missing', () => {
-    const path = writeTemporaryConfig('guildId: "123456789012345678"\n')
-    expect(() => loadConfig(path)).toThrow()
+    const configPath = writeTemporaryConfig('guildId: "123456789012345678"\n')
+    expect(() => loadConfig(configPath)).toThrow()
   })
 
   it('throws when allowedUserIds is empty', () => {
@@ -62,7 +60,7 @@ describe('loadConfig', () => {
       'allowedUserIds:\n  - "345678901234567890"',
       'allowedUserIds: []'
     )
-    const path = writeTemporaryConfig(invalid)
-    expect(() => loadConfig(path)).toThrow()
+    const configPath = writeTemporaryConfig(invalid)
+    expect(() => loadConfig(configPath)).toThrow()
   })
 })

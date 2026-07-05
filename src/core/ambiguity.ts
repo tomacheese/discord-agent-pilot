@@ -1,6 +1,6 @@
 import { ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js'
-import type { Config } from '../config/schema.js'
-import { isAllowedUser } from '../discord/permissions.js'
+import type { Config } from '../config/schema'
+import { isAllowedUser } from '../discord/permissions'
 
 /** How long to wait for a human to resolve an ambiguous sessionId prompt before giving up (§4 step 5). */
 const AMBIGUITY_PROMPT_TIMEOUT_MS = 5 * 60 * 1000

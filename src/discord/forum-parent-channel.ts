@@ -1,5 +1,5 @@
 import type { ForumChannel, ThreadChannel } from 'discord.js'
-import type { ParentChannel } from './parent-channel.js'
+import type { ParentChannel } from './parent-channel'
 
 /** ParentChannel implementation backed by a Discord forum channel. */
 export class ForumParentChannel implements ParentChannel {

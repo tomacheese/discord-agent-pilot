@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Message, OmitPartialGroupDMChannel } from 'discord.js'
-import type { Config } from '../config/schema.js'
-import { createDiscordClient } from './client.js'
+import type { Config } from '../config/schema'
+import { createDiscordClient } from './client'
 
 function makeConfig(allowedUserIds: string[]): Config {
   return {

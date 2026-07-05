@@ -1,37 +1,39 @@
-/* eslint-disable unicorn/name-replacements */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import type { Config } from '../config/schema.js'
-import { openRegistryDb } from '../registry/db.js'
-import { findSessionById } from '../registry/sessions.js'
-import { AmbiguityTracker } from './ambiguity.js'
-import { runDetectionCycle, type OrchestratorDeps } from './orchestrator.js'
+import type { Config } from '../config/schema'
+import { openRegistryDb } from '../registry/db'
+import { findSessionById } from '../registry/sessions'
+import { AmbiguityTracker } from './ambiguity'
+import {
+  runDetectionCycle,
+  type OrchestratorDependencies,
+} from './orchestrator'
 
-vi.mock('../tmux/list-sessions.js', () => ({
+vi.mock('../tmux/list-sessions', () => ({
   listAllTmuxPanes: vi.fn(),
 }))
-vi.mock('../tmux/process-tree.js', () => ({
+vi.mock('../tmux/process-tree', () => ({
   findClaudeProcessPid: vi.fn(),
   isClaudeProcessAlive: vi.fn(),
 }))
-vi.mock('../tmux/proc.js', () => ({
+vi.mock('../tmux/proc', () => ({
   readProcessCwd: vi.fn(),
   readProcessEnviron: vi.fn(),
 }))
-vi.mock('../tmux/session-id-resolver.js', () => ({
-  resolveContainerConfigDir: vi.fn(),
+vi.mock('../tmux/session-id-resolver', () => ({
+  resolveContainerConfigDirectory: vi.fn(),
   resolveSessionId: vi.fn(),
 }))
 
-import { listAllTmuxPanes } from '../tmux/list-sessions.js'
+import { listAllTmuxPanes } from '../tmux/list-sessions'
 import {
   findClaudeProcessPid,
   isClaudeProcessAlive,
-} from '../tmux/process-tree.js'
-import { readProcessCwd, readProcessEnviron } from '../tmux/proc.js'
+} from '../tmux/process-tree'
+import { readProcessCwd, readProcessEnviron } from '../tmux/proc'
 import {
-  resolveContainerConfigDir,
+  resolveContainerConfigDirectory,
   resolveSessionId,
-} from '../tmux/session-id-resolver.js'
+} from '../tmux/session-id-resolver'
 
 function makeConfig(): Config {
   return {
@@ -53,20 +55,20 @@ function makeConfig(): Config {
 }
 
 /**
- * Builds a fresh `OrchestratorDeps` for a test, along with the individual
+ * Builds a fresh `OrchestratorDependencies` for a test, along with the individual
  * mock functions embedded in it. Assertions reference these local mock
- * function bindings directly (rather than the `deps.x.y` property access)
+ * function bindings directly (rather than the `dependencies.x.y` property access)
  * to avoid `@typescript-eslint/unbound-method` false positives on
  * interface-typed method properties.
  */
-function makeDeps(): {
-  deps: OrchestratorDeps
+function makeDependencies(): {
+  dependencies: OrchestratorDependencies
   createSessionThread: ReturnType<typeof vi.fn>
   promptSend: ReturnType<typeof vi.fn>
 } {
   const createSessionThread = vi.fn().mockResolvedValue({ id: 'thread-1' })
   const promptSend = vi.fn()
-  const deps: OrchestratorDeps = {
+  const dependencies: OrchestratorDependencies = {
     db: openRegistryDb(':memory:'),
     parentChannel: { createSessionThread },
     promptChannel: { send: promptSend },
@@ -76,7 +78,7 @@ function makeDeps(): {
     resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
   }
-  return { deps, createSessionThread, promptSend }
+  return { dependencies, createSessionThread, promptSend }
 }
 
 beforeEach(() => {
@@ -91,7 +93,7 @@ beforeEach(() => {
   vi.mocked(readProcessEnviron).mockReset().mockResolvedValue({
     CLAUDE_CONFIG_DIR: '/home/user/.claude',
   })
-  vi.mocked(resolveContainerConfigDir)
+  vi.mocked(resolveContainerConfigDirectory)
     .mockReset()
     .mockReturnValue('/host/claude-config')
   vi.mocked(resolveSessionId).mockReset()
@@ -103,19 +105,19 @@ describe('runDetectionCycle', () => {
       kind: 'resolved',
       sessionId: 'session-1',
     })
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).toHaveBeenCalledWith('session-1')
-    expect(findSessionById(deps.db, 'session-1')).toBeDefined()
+    expect(findSessionById(dependencies.db, 'session-1')).toBeDefined()
   })
 
   it('does nothing when no claude process is found in the pane', async () => {
     vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).not.toHaveBeenCalled()
   })
@@ -125,19 +127,19 @@ describe('runDetectionCycle', () => {
       kind: 'resolved',
       sessionId: 'session-1',
     })
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
 
-    await runDetectionCycle(deps, makeConfig())
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).toHaveBeenCalledTimes(1)
   })
 
   it('does not create a thread while resolution is unresolved', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({ kind: 'unresolved' })
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).not.toHaveBeenCalled()
   })
@@ -148,9 +150,9 @@ describe('runDetectionCycle', () => {
       kind: 'resolved',
       sessionId: 'session-1',
     })
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).not.toHaveBeenCalled()
   })
@@ -160,10 +162,10 @@ describe('runDetectionCycle', () => {
       kind: 'resolved',
       sessionId: 'session-1',
     })
-    const { deps, createSessionThread } = makeDeps()
-    deps.resolvedPanes.set('tmux-1:100', '300')
+    const { dependencies, createSessionThread } = makeDependencies()
+    dependencies.resolvedPanes.set('tmux-1:100', '300')
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(isClaudeProcessAlive).toHaveBeenCalledWith('/proc', '300')
     expect(findClaudeProcessPid).not.toHaveBeenCalled()
@@ -176,18 +178,18 @@ describe('runDetectionCycle', () => {
       kind: 'resolved',
       sessionId: 'session-2',
     })
-    const { deps, createSessionThread } = makeDeps()
+    const { dependencies, createSessionThread } = makeDependencies()
     // A prior session ('session-1', pid 300) was registered in this pane;
     // that process has since exited and a new claude process (pid 300,
     // reused by mockResolvedValue('300') as the "new" process for
     // simplicity) started in the same pane.
-    deps.resolvedPanes.set('tmux-1:100', '300')
+    dependencies.resolvedPanes.set('tmux-1:100', '300')
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(findClaudeProcessPid).toHaveBeenCalledWith('/proc', '100')
     expect(createSessionThread).toHaveBeenCalledWith('session-2')
-    expect(findSessionById(deps.db, 'session-2')).toBeDefined()
+    expect(findSessionById(dependencies.db, 'session-2')).toBeDefined()
   })
 
   it('prompts for a selection when resolution is ambiguous, then registers the chosen sessionId', async () => {
@@ -195,7 +197,7 @@ describe('runDetectionCycle', () => {
       kind: 'ambiguous',
       candidates: ['session-a', 'session-b'],
     })
-    const { deps, createSessionThread, promptSend } = makeDeps()
+    const { dependencies, createSessionThread, promptSend } = makeDependencies()
     promptSend.mockResolvedValue({
       createMessageComponentCollector: () => ({
         on: (event: string, callback: (interaction: unknown) => void) => {
@@ -211,10 +213,10 @@ describe('runDetectionCycle', () => {
       }),
     })
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).toHaveBeenCalledWith('session-b')
-    expect(findSessionById(deps.db, 'session-b')).toBeDefined()
+    expect(findSessionById(dependencies.db, 'session-b')).toBeDefined()
   })
 
   it('does not register a session when the ambiguity prompt times out', async () => {
@@ -222,7 +224,7 @@ describe('runDetectionCycle', () => {
       kind: 'ambiguous',
       candidates: ['session-a', 'session-b'],
     })
-    const { deps, createSessionThread, promptSend } = makeDeps()
+    const { dependencies, createSessionThread, promptSend } = makeDependencies()
     promptSend.mockResolvedValue({
       createMessageComponentCollector: () => ({
         on: (
@@ -236,7 +238,7 @@ describe('runDetectionCycle', () => {
       }),
     })
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).not.toHaveBeenCalled()
   })
@@ -246,11 +248,11 @@ describe('runDetectionCycle', () => {
       kind: 'ambiguous',
       candidates: ['session-a', 'session-b'],
     })
-    const { deps, createSessionThread } = makeDeps()
-    deps.promptChannel = undefined
+    const { dependencies, createSessionThread } = makeDependencies()
+    dependencies.promptChannel = undefined
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
-    await runDetectionCycle(deps, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledWith(

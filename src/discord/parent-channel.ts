@@ -1,6 +1,6 @@
 import type { ForumChannel, TextChannel, ThreadChannel } from 'discord.js'
-import { ForumParentChannel } from './forum-parent-channel.js'
-import { TextParentChannel } from './text-parent-channel.js'
+import { ForumParentChannel } from './forum-parent-channel'
+import { TextParentChannel } from './text-parent-channel'
 
 /** Abstraction over a Discord channel that can host per-session threads (§7). */
 export interface ParentChannel {

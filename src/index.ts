@@ -1,14 +1,14 @@
 import type { ForumChannel, TextChannel } from 'discord.js'
-import { loadConfig } from './config/load.js'
-import { openRegistryDb as openRegistryDatabase } from './registry/db.js'
-import { createDiscordClient } from './discord/client.js'
-import { createParentChannel } from './discord/parent-channel.js'
-import { AmbiguityTracker } from './core/ambiguity.js'
+import { loadConfig } from './config/load'
+import { openRegistryDb as openRegistryDatabase } from './registry/db'
+import { createDiscordClient } from './discord/client'
+import { createParentChannel } from './discord/parent-channel'
+import { AmbiguityTracker } from './core/ambiguity'
 import {
   runDetectionCycle,
-  type OrchestratorDeps as OrchestratorDependencies,
-} from './core/orchestrator.js'
-import { resolveTmuxSocketPath } from './tmux/list-sessions.js'
+  type OrchestratorDependencies,
+} from './core/orchestrator'
+import { resolveTmuxSocketPath } from './tmux/list-sessions'
 
 const configPath = process.env.CONFIG_PATH ?? './config.yaml'
 const config = loadConfig(configPath)

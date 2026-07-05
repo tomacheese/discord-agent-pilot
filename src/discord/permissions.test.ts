@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Config } from '../config/schema.js'
-import { isAllowedUser } from './permissions.js'
+import type { Config } from '../config/schema'
+import { isAllowedUser } from './permissions'
 
 function makeConfig(allowedUserIds: string[]): Config {
   return {

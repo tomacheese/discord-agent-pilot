@@ -1,9 +1,8 @@
-/* eslint-disable unicorn/name-replacements */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { openRegistryDb } from './db.js'
+import { openRegistryDb } from './db'
 
 describe('openRegistryDb', () => {
   it('creates the sessions table', () => {
@@ -25,16 +24,16 @@ describe('openRegistryDb', () => {
   })
 
   describe('against a real file', () => {
-    let tempDir: string
+    let temporaryDirectory: string
     let dbPath: string
 
     beforeEach(() => {
-      tempDir = mkdtempSync(path.join(tmpdir(), 'registry-db-test-'))
-      dbPath = path.join(tempDir, 'registry.db')
+      temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'registry-db-test-'))
+      dbPath = path.join(temporaryDirectory, 'registry.db')
     })
 
     afterEach(() => {
-      rmSync(tempDir, { recursive: true, force: true })
+      rmSync(temporaryDirectory, { recursive: true, force: true })
     })
 
     it('is idempotent when opened twice against the same file', () => {
@@ -47,4 +46,3 @@ describe('openRegistryDb', () => {
     })
   })
 })
-/* eslint-enable unicorn/name-replacements */

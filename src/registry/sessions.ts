@@ -1,4 +1,3 @@
-/* eslint-disable unicorn/name-replacements */
 import type Database from 'better-sqlite3'
 
 /**
@@ -54,4 +53,3 @@ export function insertSession(
         @configDir, @jsonlPath, @jsonlOffset, @status, @createdAt, @updatedAt)`
   ).run(session)
 }
-/* eslint-enable unicorn/name-replacements */

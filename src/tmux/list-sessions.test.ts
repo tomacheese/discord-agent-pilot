@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { listAllTmuxPanes, resolveTmuxSocketPath } from './list-sessions.js'
+import { listAllTmuxPanes, resolveTmuxSocketPath } from './list-sessions'
 
 describe('listAllTmuxPanes', () => {
   it('parses session name, pane id, and pid per line', async () => {

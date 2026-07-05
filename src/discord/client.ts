@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, type Message } from 'discord.js'
-import type { Config } from '../config/schema.js'
-import { isAllowedUser } from './permissions.js'
+import type { Config } from '../config/schema'
+import { isAllowedUser } from './permissions'
 
 /**
  * Handlers a caller can register on the client created by `createDiscordClient`.

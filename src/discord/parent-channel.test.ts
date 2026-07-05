@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ForumChannel, TextChannel } from 'discord.js'
-import { createParentChannel } from './parent-channel.js'
+import { createParentChannel } from './parent-channel'
 
 describe('createParentChannel', () => {
   it('creates a forum thread with the given title via ForumParentChannel', async () => {

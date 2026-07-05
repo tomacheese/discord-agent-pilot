@@ -1,30 +1,29 @@
-/* eslint-disable unicorn/name-replacements */
 import type Database from 'better-sqlite3'
-import type { Config } from '../config/schema.js'
-import type { ParentChannel } from '../discord/parent-channel.js'
+import type { Config } from '../config/schema'
+import type { ParentChannel } from '../discord/parent-channel'
 import {
   findSessionById,
   insertSession,
   type SessionRow,
-} from '../registry/sessions.js'
-import { listAllTmuxPanes } from '../tmux/list-sessions.js'
-import { readProcessCwd, readProcessEnviron } from '../tmux/proc.js'
+} from '../registry/sessions'
+import { listAllTmuxPanes } from '../tmux/list-sessions'
+import { readProcessCwd, readProcessEnviron } from '../tmux/proc'
 import {
   findClaudeProcessPid,
   isClaudeProcessAlive,
-} from '../tmux/process-tree.js'
+} from '../tmux/process-tree'
 import {
-  resolveContainerConfigDir,
+  resolveContainerConfigDirectory,
   resolveSessionId,
-} from '../tmux/session-id-resolver.js'
+} from '../tmux/session-id-resolver'
 import {
   AmbiguityTracker,
   promptSessionIdSelection,
   type PromptChannel,
-} from './ambiguity.js'
+} from './ambiguity'
 
 /** External collaborators `runDetectionCycle` needs, injected for testability. */
-export interface OrchestratorDeps {
+export interface OrchestratorDependencies {
   db: Database.Database
   parentChannel: ParentChannel
   /**
@@ -84,24 +83,25 @@ function isWithinWorkspaceRoots(
  * Registers `sessionId` (creating its Discord thread) unless it is already
  * registered (§4 step 6). Guards against concurrent registration of the
  * same sessionId from a parallel `processPane` call via
- * `deps.registeringSessionIds`.
+ * `dependencies.registeringSessionIds`.
  */
 async function registerSession(
-  deps: OrchestratorDeps,
+  dependencies: OrchestratorDependencies,
   config: Config,
   sessionId: string,
   tmuxSession: string,
   panePid: string,
   claudePid: string,
   cwd: string,
-  containerConfigDir: string
+  containerConfigDirectory: string
 ): Promise<void> {
-  if (findSessionById(deps.db, sessionId)) return
-  if (deps.registeringSessionIds.has(sessionId)) return
-  deps.registeringSessionIds.add(sessionId)
+  if (findSessionById(dependencies.db, sessionId)) return
+  if (dependencies.registeringSessionIds.has(sessionId)) return
+  dependencies.registeringSessionIds.add(sessionId)
 
   try {
-    const thread = await deps.parentChannel.createSessionThread(sessionId)
+    const thread =
+      await dependencies.parentChannel.createSessionThread(sessionId)
     const now = Date.now()
     const row: SessionRow = {
       id: sessionId,
@@ -110,17 +110,17 @@ async function registerSession(
       tmuxSession,
       tmuxPanePid: panePid,
       cwd,
-      configDir: containerConfigDir,
-      jsonlPath: `${containerConfigDir}/projects/${cwd.replaceAll('/', '-')}/${sessionId}.jsonl`,
+      configDir: containerConfigDirectory,
+      jsonlPath: `${containerConfigDirectory}/projects/${cwd.replaceAll('/', '-')}/${sessionId}.jsonl`,
       jsonlOffset: 0,
       status: 'discovered',
       createdAt: now,
       updatedAt: now,
     }
-    insertSession(deps.db, row)
-    deps.resolvedPanes.set(paneKey(tmuxSession, panePid), claudePid)
+    insertSession(dependencies.db, row)
+    dependencies.resolvedPanes.set(paneKey(tmuxSession, panePid), claudePid)
   } finally {
-    deps.registeringSessionIds.delete(sessionId)
+    dependencies.registeringSessionIds.delete(sessionId)
   }
 }
 
@@ -129,33 +129,38 @@ async function registerSession(
  * then registers it (§4 steps 2–6).
  */
 async function processPane(
-  deps: OrchestratorDeps,
+  dependencies: OrchestratorDependencies,
   config: Config,
   tmuxSession: string,
   panePid: string
 ): Promise<void> {
-  const cachedClaudePid = deps.resolvedPanes.get(paneKey(tmuxSession, panePid))
+  const cachedClaudePid = dependencies.resolvedPanes.get(
+    paneKey(tmuxSession, panePid)
+  )
   if (
     cachedClaudePid !== undefined &&
-    (await isClaudeProcessAlive(deps.procRoot, cachedClaudePid))
+    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
   ) {
     return
   }
 
-  const claudePid = await findClaudeProcessPid(deps.procRoot, panePid)
+  const claudePid = await findClaudeProcessPid(dependencies.procRoot, panePid)
   if (!claudePid) return
 
-  const cwd = await readProcessCwd(deps.procRoot, claudePid)
+  const cwd = await readProcessCwd(dependencies.procRoot, claudePid)
   if (!isWithinWorkspaceRoots(cwd, config.workspaceRoots)) return
 
-  const environment = await readProcessEnviron(deps.procRoot, claudePid)
-  const hostConfigDir =
+  const environment = await readProcessEnviron(dependencies.procRoot, claudePid)
+  const hostConfigDirectory =
     environment.CLAUDE_CONFIG_DIR ?? config.claude.defaultConfigDir.hostPath
-  const containerConfigDir = resolveContainerConfigDir(config, hostConfigDir)
+  const containerConfigDirectory = resolveContainerConfigDirectory(
+    config,
+    hostConfigDirectory
+  )
 
   const resolution = await resolveSessionId(
-    deps.procRoot,
-    containerConfigDir,
+    dependencies.procRoot,
+    containerConfigDirectory,
     claudePid,
     cwd,
     config.sessionResolution.ambiguityThresholdMs
@@ -164,9 +169,9 @@ async function processPane(
   if (resolution.kind === 'unresolved') return
 
   if (resolution.kind === 'ambiguous') {
-    if (!deps.promptChannel) {
+    if (!dependencies.promptChannel) {
       // Phase 1 limitation: forum parent channels cannot host the Select
-      // menu prompt (see OrchestratorDeps.promptChannel). Logs on every
+      // menu prompt (see OrchestratorDependencies.promptChannel). Logs on every
       // detection cycle this pane remains ambiguous (not deduplicated),
       // and leaves the session unregistered.
       console.warn(
@@ -175,51 +180,53 @@ async function processPane(
       )
       return
     }
-    if (deps.ambiguityTracker.isPending(tmuxSession, panePid)) return
-    deps.ambiguityTracker.markPending(
+    if (dependencies.ambiguityTracker.isPending(tmuxSession, panePid)) return
+    dependencies.ambiguityTracker.markPending(
       tmuxSession,
       panePid,
       resolution.candidates
     )
     const sessionId = await promptSessionIdSelection(
-      deps.promptChannel,
+      dependencies.promptChannel,
       resolution.candidates,
       config
     )
-    deps.ambiguityTracker.resolve(tmuxSession, panePid)
+    dependencies.ambiguityTracker.resolve(tmuxSession, panePid)
     if (sessionId === undefined) return
     await registerSession(
-      deps,
+      dependencies,
       config,
       sessionId,
       tmuxSession,
       panePid,
       claudePid,
       cwd,
-      containerConfigDir
+      containerConfigDirectory
     )
     return
   }
 
   await registerSession(
-    deps,
+    dependencies,
     config,
     resolution.sessionId,
     tmuxSession,
     panePid,
     claudePid,
     cwd,
-    containerConfigDir
+    containerConfigDirectory
   )
 }
 
 /** Runs one tmux detection / sessionId resolution / registration cycle (§4 steps 1–6). */
 export async function runDetectionCycle(
-  deps: OrchestratorDeps,
+  dependencies: OrchestratorDependencies,
   config: Config
 ): Promise<void> {
-  const panes = await listAllTmuxPanes(deps.socketPath)
+  const panes = await listAllTmuxPanes(dependencies.socketPath)
   await Promise.all(
-    panes.map((pane) => processPane(deps, config, pane.sessionName, pane.pid))
+    panes.map((pane) =>
+      processPane(dependencies, config, pane.sessionName, pane.pid)
+    )
   )
 }

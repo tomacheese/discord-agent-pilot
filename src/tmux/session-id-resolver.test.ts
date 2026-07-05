@@ -1,13 +1,12 @@
-/* eslint-disable unicorn/import-style, unicorn/name-replacements, unicorn/require-array-sort-compare */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { Config } from '../config/schema.js'
+import type { Config } from '../config/schema'
 import {
-  resolveContainerConfigDir,
+  resolveContainerConfigDirectory,
   resolveSessionId,
-} from './session-id-resolver.js'
+} from './session-id-resolver'
 
 function makeConfig(): Config {
   return {
@@ -30,50 +29,57 @@ function makeConfig(): Config {
   }
 }
 
-describe('resolveContainerConfigDir', () => {
+describe('resolveContainerConfigDirectory', () => {
   it('maps a hostPath listed in configDirs to its containerPath', () => {
-    expect(resolveContainerConfigDir(makeConfig(), '/home/user/.claude')).toBe(
-      '/host/claude-config'
-    )
+    expect(
+      resolveContainerConfigDirectory(makeConfig(), '/home/user/.claude')
+    ).toBe('/host/claude-config')
   })
 
   it('throws for an unmapped hostPath', () => {
-    expect(() => resolveContainerConfigDir(makeConfig(), '/unknown')).toThrow()
+    expect(() =>
+      resolveContainerConfigDirectory(makeConfig(), '/unknown')
+    ).toThrow()
   })
 })
 
 function makeFakeProcRoot(startTimeEpochSec: number, pid: string): string {
-  const procRoot = mkdtempSync(join(tmpdir(), 'dap-resolver-proc-'))
+  const procRoot = mkdtempSync(path.join(tmpdir(), 'dap-resolver-proc-'))
   const bootTimeSec = 1000
   const ticksPerSec = 100
   const starttimeTicks = Math.round(
     (startTimeEpochSec - bootTimeSec) * ticksPerSec
   )
-  mkdirSync(join(procRoot, pid))
+  mkdirSync(path.join(procRoot, pid))
   const fields = Array.from({ length: 25 }, () => '0')
   fields[19] = String(starttimeTicks)
   writeFileSync(
-    join(procRoot, pid, 'stat'),
+    path.join(procRoot, pid, 'stat'),
     `${pid} (claude) ${fields.join(' ')}`
   )
-  writeFileSync(join(procRoot, 'stat'), `cpu  0 0 0 0\nbtime ${bootTimeSec}\n`)
+  writeFileSync(
+    path.join(procRoot, 'stat'),
+    `cpu  0 0 0 0\nbtime ${bootTimeSec}\n`
+  )
   return procRoot
 }
 
 describe('resolveSessionId', () => {
   it('prefers sessions/<pid>.json when present', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
-    mkdirSync(join(containerConfigDir, 'sessions'), { recursive: true })
+    mkdirSync(path.join(containerConfigDirectory, 'sessions'), {
+      recursive: true,
+    })
     writeFileSync(
-      join(containerConfigDir, 'sessions', '1234.json'),
+      path.join(containerConfigDirectory, 'sessions', '1234.json'),
       JSON.stringify({ sessionId: 'session-from-marker' })
     )
 
     const result = await resolveSessionId(
       '/proc-unused',
-      containerConfigDir,
+      containerConfigDirectory,
       '1234',
       '/cwd',
       3000
@@ -86,35 +92,43 @@ describe('resolveSessionId', () => {
   })
 
   it('rejects a marker sessionId containing a path separator', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
-    mkdirSync(join(containerConfigDir, 'sessions'), { recursive: true })
+    mkdirSync(path.join(containerConfigDirectory, 'sessions'), {
+      recursive: true,
+    })
     writeFileSync(
-      join(containerConfigDir, 'sessions', '1234.json'),
+      path.join(containerConfigDirectory, 'sessions', '1234.json'),
       JSON.stringify({ sessionId: '../../etc/passwd' })
     )
 
     await expect(
-      resolveSessionId('/proc-unused', containerConfigDir, '1234', '/cwd', 3000)
+      resolveSessionId(
+        '/proc-unused',
+        containerConfigDirectory,
+        '1234',
+        '/cwd',
+        3000
+      )
     ).rejects.toThrow()
   })
 
   it('falls back to the single matching jsonl file when no marker exists', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
-    const projectDir = join(
-      containerConfigDir,
+    const projectDirectory = path.join(
+      containerConfigDirectory,
       'projects',
       '-mnt-ssd-repos-example'
     )
-    mkdirSync(projectDir, { recursive: true })
-    writeFileSync(join(projectDir, 'session-only.jsonl'), '{}')
+    mkdirSync(projectDirectory, { recursive: true })
+    writeFileSync(path.join(projectDirectory, 'session-only.jsonl'), '{}')
 
     const result = await resolveSessionId(
       '/proc-unused',
-      containerConfigDir,
+      containerConfigDirectory,
       '1234',
       '/mnt/ssd/repos/example',
       3000
@@ -124,13 +138,13 @@ describe('resolveSessionId', () => {
   })
 
   it('returns unresolved when the project directory does not exist', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
 
     const result = await resolveSessionId(
       '/proc-unused',
-      containerConfigDir,
+      containerConfigDirectory,
       '1234',
       '/mnt/ssd/repos/example',
       3000
@@ -140,19 +154,19 @@ describe('resolveSessionId', () => {
   })
 
   it('picks the jsonl file closest to the process start time when unambiguous', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
-    const projectDir = join(
-      containerConfigDir,
+    const projectDirectory = path.join(
+      containerConfigDirectory,
       'projects',
       '-mnt-ssd-repos-example'
     )
-    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(projectDirectory, { recursive: true })
     // Process started at epoch 2000s.
     const procRoot = makeFakeProcRoot(2000, '1234')
-    writeFileSync(join(projectDir, 'far.jsonl'), '{}')
-    writeFileSync(join(projectDir, 'close.jsonl'), '{}')
+    writeFileSync(path.join(projectDirectory, 'far.jsonl'), '{}')
+    writeFileSync(path.join(projectDirectory, 'close.jsonl'), '{}')
     // Nudge mtimes/birthtimes apart: 'far' was created far earlier than the
     // process start, 'close' right around it. We can't set birthtime
     // directly, so this test only asserts *a* single sessionId is chosen
@@ -162,7 +176,7 @@ describe('resolveSessionId', () => {
     // one of the two candidates.
     const result = await resolveSessionId(
       procRoot,
-      containerConfigDir,
+      containerConfigDirectory,
       '1234',
       '/mnt/ssd/repos/example',
       0
@@ -175,23 +189,23 @@ describe('resolveSessionId', () => {
   })
 
   it('returns ambiguous when top two candidates are within the threshold', async () => {
-    const containerConfigDir = mkdtempSync(
-      join(tmpdir(), 'dap-resolver-config-')
+    const containerConfigDirectory = mkdtempSync(
+      path.join(tmpdir(), 'dap-resolver-config-')
     )
-    const projectDir = join(
-      containerConfigDir,
+    const projectDirectory = path.join(
+      containerConfigDirectory,
       'projects',
       '-mnt-ssd-repos-example'
     )
-    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(projectDirectory, { recursive: true })
     const procRoot = makeFakeProcRoot(2000, '1234')
-    writeFileSync(join(projectDir, 'a.jsonl'), '{}')
-    writeFileSync(join(projectDir, 'b.jsonl'), '{}')
+    writeFileSync(path.join(projectDirectory, 'a.jsonl'), '{}')
+    writeFileSync(path.join(projectDirectory, 'b.jsonl'), '{}')
 
     // With an effectively infinite threshold, any two candidates count as ambiguous.
     const result = await resolveSessionId(
       procRoot,
-      containerConfigDir,
+      containerConfigDirectory,
       '1234',
       '/mnt/ssd/repos/example',
       Number.MAX_SAFE_INTEGER
@@ -199,7 +213,10 @@ describe('resolveSessionId', () => {
 
     expect(result.kind).toBe('ambiguous')
     if (result.kind === 'ambiguous') {
-      expect(result.candidates.toSorted()).toEqual(['a', 'b'])
+      expect(result.candidates.toSorted((a, b) => a.localeCompare(b))).toEqual([
+        'a',
+        'b',
+      ])
     }
   })
 })

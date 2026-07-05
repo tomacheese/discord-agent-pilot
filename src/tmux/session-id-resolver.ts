@@ -1,9 +1,8 @@
-/* eslint-disable unicorn/import-style, unicorn/name-replacements */
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import path from 'node:path'
 import { z } from 'zod'
-import type { Config } from '../config/schema.js'
-import { readBootTimeEpochMs, readProcessStartTicks } from './proc.js'
+import type { Config } from '../config/schema'
+import { readBootTimeEpochMs, readProcessStartTicks } from './proc'
 
 /** Result of resolving a Claude Code sessionId for a detected tmux/claude process (§4). */
 export type SessionIdResolution =
@@ -33,24 +32,24 @@ const sessionMarkerSchema = z.object({
 /**
  * Maps a host-side CLAUDE_CONFIG_DIR path to its container-side path using
  * `config.configDirs`/`config.claude.defaultConfigDir` (§6). Throws if
- * `hostConfigDir` matches neither.
+ * `hostConfigDirectory` matches neither.
  */
-export function resolveContainerConfigDir(
+export function resolveContainerConfigDirectory(
   config: Config,
-  hostConfigDir: string
+  hostConfigDirectory: string
 ): string {
   const match = config.configDirs.find(
-    (entry) => entry.hostPath === hostConfigDir
+    (entry) => entry.hostPath === hostConfigDirectory
   )
   if (match) return match.containerPath
-  if (config.claude.defaultConfigDir.hostPath === hostConfigDir) {
+  if (config.claude.defaultConfigDir.hostPath === hostConfigDirectory) {
     return config.claude.defaultConfigDir.containerPath
   }
-  throw new Error(`No configDirs mapping for host path: ${hostConfigDir}`)
+  throw new Error(`No configDirs mapping for host path: ${hostConfigDirectory}`)
 }
 
 /** Converts a cwd into Claude Code's on-disk project directory name (`/` replaced with `-`). */
-function projectDirName(cwd: string): string {
+function projectDirectoryName(cwd: string): string {
   return cwd.replaceAll('/', '-')
 }
 
@@ -59,10 +58,10 @@ function stripJsonlExtension(file: string): string {
   return file.replace(/\.jsonl$/, '')
 }
 
-/** Reads `path`'s content, or `undefined` if it does not exist. Rethrows any other error. */
-async function readFileIfExists(path: string): Promise<string | undefined> {
+/** Reads `filePath`'s content, or `undefined` if it does not exist. Rethrows any other error. */
+async function readFileIfExists(filePath: string): Promise<string | undefined> {
   try {
-    return await readFile(path, 'utf8')
+    return await readFile(filePath, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
@@ -81,7 +80,7 @@ async function readdirIfExists(directory: string): Promise<string[]> {
 
 /**
  * Resolves the Claude Code sessionId for `pid` running in `cwd` under
- * `containerConfigDir` (§4 step 4). Prefers the plugin-provided marker file
+ * `containerConfigDirectory` (§4 step 4). Prefers the plugin-provided marker file
  * when present, falling back to a JSONL-creation-time heuristic otherwise —
  * see the implementation below for the exact resolution order; this
  * comment intentionally doesn't restate it step-by-step to avoid drifting
@@ -89,21 +88,31 @@ async function readdirIfExists(directory: string): Promise<string[]> {
  */
 export async function resolveSessionId(
   procRoot: string,
-  containerConfigDir: string,
+  containerConfigDirectory: string,
   pid: string,
   cwd: string,
   ambiguityThresholdMs: number
 ): Promise<SessionIdResolution> {
-  const markerPath = join(containerConfigDir, 'sessions', `${pid}.json`)
+  const markerPath = path.join(
+    containerConfigDirectory,
+    'sessions',
+    `${pid}.json`
+  )
   const markerContent = await readFileIfExists(markerPath)
   if (markerContent !== undefined) {
     const marker = sessionMarkerSchema.parse(JSON.parse(markerContent))
     return { kind: 'resolved', sessionId: marker.sessionId }
   }
 
-  const projectDir = join(containerConfigDir, 'projects', projectDirName(cwd))
-  const projectDirEntries = await readdirIfExists(projectDir)
-  const jsonlFiles = projectDirEntries.filter((file) => file.endsWith('.jsonl'))
+  const projectDirectory = path.join(
+    containerConfigDirectory,
+    'projects',
+    projectDirectoryName(cwd)
+  )
+  const projectDirectoryEntries = await readdirIfExists(projectDirectory)
+  const jsonlFiles = projectDirectoryEntries.filter((file) =>
+    file.endsWith('.jsonl')
+  )
   if (jsonlFiles.length === 0) {
     return { kind: 'unresolved' }
   }
@@ -118,7 +127,7 @@ export async function resolveSessionId(
 
   const unsortedScored = await Promise.all(
     jsonlFiles.map(async (file) => {
-      const stats = await stat(join(projectDir, file))
+      const stats = await stat(path.join(projectDirectory, file))
       return { file, diff: Math.abs(stats.birthtimeMs - processStartMs) }
     })
   )

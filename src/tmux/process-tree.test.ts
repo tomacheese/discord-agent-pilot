@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { findClaudeProcessPid } from './process-tree.js'
+import { findClaudeProcessPid } from './process-tree'
 
 function makeProc(
   procRoot: string,

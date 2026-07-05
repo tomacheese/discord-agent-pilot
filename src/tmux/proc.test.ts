@@ -7,7 +7,7 @@ import {
   readProcessCwd,
   readProcessEnviron,
   readProcessStartTicks,
-} from './proc.js'
+} from './proc'
 
 function makeFakeProcRoot(): string {
   return mkdtempSync(path.join(tmpdir(), 'dap-proc-'))

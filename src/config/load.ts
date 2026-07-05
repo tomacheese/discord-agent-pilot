@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { parse } from 'yaml'
-import { configSchema, type Config } from './schema.js'
+import { configSchema, type Config } from './schema'
 
 /**
  * Loads and validates the discord-agent-pilot config file at `path`.

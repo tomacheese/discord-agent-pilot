@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Config } from '../config/schema.js'
+import type { Config } from '../config/schema'
 import {
   AmbiguityTracker,
   promptSessionIdSelection,
   type PromptChannel,
-} from './ambiguity.js'
+} from './ambiguity'
 
 function makeConfig(allowedUserIds: string[]): Config {
   return {

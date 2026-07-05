@@ -1,7 +1,6 @@
-/* eslint-disable unicorn/name-replacements,@typescript-eslint/no-confusing-void-expression */
 import { describe, expect, it } from 'vitest'
-import { openRegistryDb } from './db.js'
-import { findSessionById, insertSession, type SessionRow } from './sessions.js'
+import { openRegistryDb } from './db'
+import { findSessionById, insertSession, type SessionRow } from './sessions'
 
 function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -38,7 +37,8 @@ describe('sessions registry', () => {
   it('throws when inserting a duplicate id', () => {
     const db = openRegistryDb(':memory:')
     insertSession(db, makeRow())
-    expect(() => insertSession(db, makeRow())).toThrow()
+    expect(() => {
+      insertSession(db, makeRow())
+    }).toThrow()
   })
 })
-/* eslint-enable unicorn/name-replacements,@typescript-eslint/no-confusing-void-expression */
