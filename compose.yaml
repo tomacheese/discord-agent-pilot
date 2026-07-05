@@ -1,14 +1,14 @@
 services:
   bot:
     build: .
-    user: "1000:1000" # ホストでtmux/Claude Codeを動かすUIDと一致させる(環境に応じて変更)
+    user: '1000:1000' # ホストでtmux/Claude Codeを動かすUIDと一致させる(環境に応じて変更)
     environment:
       CONFIG_PATH: /app/config.yaml
       DB_PATH: /data/registry.db
       DISCORD_TOKEN: ${DISCORD_TOKEN}
     volumes:
       - /proc:/host/proc:ro
-      - /tmp/tmux-1000:/tmp/tmux-host:ro # ホストのtmuxソケットディレクトリ(UIDに合わせて変更)
+      - /tmp/tmux-1000:/tmp/tmux-host # ホストのtmuxソケットディレクトリ(UIDに合わせて変更)。Unixドメインソケットへのconnect()には書き込み権限が必要なため:roにしない
       - ~/.claude:/host/claude-config:ro # CLAUDE_CONFIG_DIR。configDirsのhostPath/containerPathの組ごとに1マウントが必要
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/data

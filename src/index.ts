@@ -46,11 +46,23 @@ async function main(): Promise<void> {
     socketPath,
   }
 
+  // Guards against overlapping cycles: if a cycle is still running when the
+  // next tick fires (e.g. a slow Discord API call), the next tick is
+  // skipped rather than started concurrently, which would otherwise let
+  // two cycles both pass registerSession's existence check for the same
+  // sessionId and race to create duplicate Discord threads.
+  let isCycleInProgress = false
   setInterval(() => {
+    if (isCycleInProgress) return
+    isCycleInProgress = true
     // eslint-disable-next-line no-void
-    void runDetectionCycle(dependencies, config).catch((error: unknown) => {
-      console.error('Detection cycle failed:', error)
-    })
+    void runDetectionCycle(dependencies, config)
+      .catch((error: unknown) => {
+        console.error('Detection cycle failed:', error)
+      })
+      .finally(() => {
+        isCycleInProgress = false
+      })
   }, config.tmux.pollIntervalMs)
 }
 
