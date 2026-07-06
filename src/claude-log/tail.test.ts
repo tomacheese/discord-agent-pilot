@@ -1,0 +1,129 @@
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createJsonlTailer, type TailedLine } from './tail'
+
+describe('createJsonlTailer', () => {
+  let temporaryDirectory: string
+  let filePath: string
+
+  beforeEach(() => {
+    temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'jsonl-tailer-test-'))
+    filePath = path.join(temporaryDirectory, 'session.jsonl')
+  })
+
+  afterEach(() => {
+    rmSync(temporaryDirectory, { recursive: true, force: true })
+  })
+
+  /** Waits until `predicate()` is true or `timeoutMs` elapses, polling every 20ms. */
+  async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+    const start = Date.now()
+    while (!predicate()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('waitFor timed out')
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
+  it('reports complete lines appended after startOffset, with byte offsets', async () => {
+    writeFileSync(filePath, '')
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+      received.push(lines)
+    })
+    tailer.start()
+    appendFileSync(filePath, '{"a":1}\n{"a":2}\n')
+    await waitFor(() => received.length > 0)
+    tailer.stop()
+
+    expect(received[0]).toEqual([
+      { text: '{"a":1}', offsetAfter: 8 },
+      { text: '{"a":2}', offsetAfter: 16 },
+    ])
+  })
+
+  it('buffers an incomplete trailing line until it is completed', async () => {
+    writeFileSync(filePath, '')
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+      received.push(lines)
+    })
+    tailer.start()
+    appendFileSync(filePath, '{"a":1}\n{"partial"')
+    await waitFor(() => received.length > 0)
+    appendFileSync(filePath, ':true}\n')
+    await waitFor(() => received.flat().length > 1)
+    tailer.stop()
+
+    const allLines = received.flat()
+    expect(allLines).toEqual([
+      { text: '{"a":1}', offsetAfter: 8 },
+      { text: '{"partial":true}', offsetAfter: 25 },
+    ])
+  })
+
+  it('resumes from startOffset without re-reporting earlier lines', async () => {
+    writeFileSync(filePath, '{"a":1}\n{"a":2}\n')
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(filePath, 8, async (lines) => {
+      received.push(lines)
+    })
+    tailer.start()
+    appendFileSync(filePath, '{"a":3}\n')
+    await waitFor(() => received.flat().length > 0)
+    tailer.stop()
+
+    expect(received.flat()).toEqual([
+      { text: '{"a":2}', offsetAfter: 16 },
+      { text: '{"a":3}', offsetAfter: 24 },
+    ])
+  })
+
+  it('handles multi-byte UTF-8 content with correct byte offsets', async () => {
+    writeFileSync(filePath, '')
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+      received.push(lines)
+    })
+    tailer.start()
+    const line = '{"text":"こんにちは"}'
+    appendFileSync(filePath, `${line}\n`)
+    await waitFor(() => received.length > 0)
+    tailer.stop()
+
+    expect(received[0]).toEqual([
+      { text: line, offsetAfter: Buffer.byteLength(line, 'utf8') + 1 },
+    ])
+  })
+
+  it('does not advance past a batch whose onLines call rejects, and retries it', async () => {
+    writeFileSync(filePath, '')
+    let callCount = 0
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+      callCount += 1
+      if (callCount === 1) {
+        throw new Error('simulated post failure')
+      }
+      received.push(lines)
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    tailer.start()
+    appendFileSync(filePath, '{"a":1}\n')
+    await waitFor(() => callCount >= 1)
+    // Trigger a retry by appending a byte (an empty-string append performs
+    // no write syscall and would not reliably emit an fs.watch event).
+    // The tailer re-reads from the still-unconfirmed offset 0, so the
+    // pending "{"a":1}\n" line is retried together with this new byte
+    // buffered as an incomplete trailing line.
+    appendFileSync(filePath, ' ')
+    await waitFor(() => received.length > 0, 5000)
+    tailer.stop()
+    errorSpy.mockRestore()
+
+    expect(received[0]).toEqual([{ text: '{"a":1}', offsetAfter: 8 }])
+  })
+})
