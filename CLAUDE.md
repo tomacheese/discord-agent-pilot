@@ -1,6 +1,6 @@
 # discord-agent-pilot
 
-Discord スレッドを通じて tmux 上の Claude Code を観測・操作する Discord Bot。
+Discord スレッドを通じて tmux 上の Claude Code を監視・操作する Discord Bot。
 
 ## Tech Stack
 

@@ -1,7 +1,7 @@
 {
   "name": "discord-agent-pilot",
-  "version": "0.1.0",
-  "description": "Discord スレッド経由で tmux 上の Claude Code を観測・操作する Discord Bot",
+  "version": "0.0.0",
+  "description": "A Discord bot that monitors and controls Claude Code running in tmux via Discord threads",
   "private": true,
   "type": "module",
   "scripts": {
