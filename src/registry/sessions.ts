@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3'
 
+/** The origin of a session's currently-applied Discord thread name. */
+export type ThreadNameSource = 'fallback' | 'ai-title' | 'agent-name'
+
 /**
  * A row in the `sessions` table.
  */
@@ -14,6 +17,7 @@ export interface SessionRow {
   jsonlPath: string
   jsonlOffset: number
   status: string
+  threadNameSource: ThreadNameSource
   createdAt: number
   updatedAt: number
 }
@@ -31,6 +35,7 @@ export function findSessionById(
               tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
               cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
               jsonl_offset AS jsonlOffset, status,
+              thread_name_source AS threadNameSource,
               created_at AS createdAt, updated_at AS updatedAt
        FROM sessions WHERE id = ?`
     )
@@ -47,9 +52,36 @@ export function insertSession(
   db.prepare(
     `INSERT INTO sessions
        (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid, cwd,
-        config_dir, jsonl_path, jsonl_offset, status, created_at, updated_at)
+        config_dir, jsonl_path, jsonl_offset, status, thread_name_source,
+        created_at, updated_at)
      VALUES
        (@id, @threadId, @parentChannelId, @tmuxSession, @tmuxPanePid, @cwd,
-        @configDir, @jsonlPath, @jsonlOffset, @status, @createdAt, @updatedAt)`
+        @configDir, @jsonlPath, @jsonlOffset, @status, @threadNameSource,
+        @createdAt, @updatedAt)`
   ).run(session)
+}
+
+/** Updates `thread_name_source` for `sessionId`. */
+export function updateThreadNameSource(
+  db: Database.Database,
+  sessionId: string,
+  source: ThreadNameSource
+): void {
+  db.prepare('UPDATE sessions SET thread_name_source = ? WHERE id = ?').run(
+    source,
+    sessionId
+  )
+}
+
+/** Reads the current `thread_name_source` for `sessionId`. */
+export function getThreadNameSource(
+  db: Database.Database,
+  sessionId: string
+): ThreadNameSource {
+  const row = db
+    .prepare(
+      'SELECT thread_name_source AS threadNameSource FROM sessions WHERE id = ?'
+    )
+    .get(sessionId) as { threadNameSource: ThreadNameSource }
+  return row.threadNameSource
 }

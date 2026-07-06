@@ -36,6 +36,7 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     jsonlPath: '/tmp/should-be-overridden.jsonl',
     jsonlOffset: 0,
     status: 'active',
+    threadNameSource: 'fallback',
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

@@ -115,6 +115,7 @@ async function registerSession(
       jsonlPath,
       jsonlOffset: 0,
       status: 'discovered',
+      threadNameSource: 'fallback',
       createdAt: now,
       updatedAt: now,
     }
