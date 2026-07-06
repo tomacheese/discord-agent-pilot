@@ -83,19 +83,34 @@ function findUnconsumedSentInput(
  * and safe to lose on restart: after a restart, tailing resumes from
  * `jsonl_offset`, so the same `user` entry is re-evaluated against
  * `input_queue` rows that are still in `state = 'sent'` and matches again.
+ *
+ * Matches are NOT written into `consumedIds` directly — they are collected
+ * into `pendingConsumedIds` instead, so that a match made while formatting
+ * one content block of a `user` entry does not get treated as permanently
+ * consumed until the *entire line* has been posted successfully (see
+ * `processLine`). This keeps `isEcho` deterministic across retries: if a
+ * later block in the same line throws and the line is retried, the same
+ * text is evaluated against the same still-unconsumed `input_queue` rows
+ * and produces the same match, instead of silently posting the
+ * previously-suppressed echo as a duplicate.
  */
 function makeEchoMatcher(
   db: Database.Database,
   sessionId: string,
-  consumedIds: Set<string>
+  consumedIds: Set<string>,
+  pendingConsumedIds: string[]
 ): (text: string) => boolean {
   return (text: string): boolean => {
     const candidates = findUnconsumedSentInput(db, sessionId)
+    const isAlreadyClaimed = (id: number): boolean => {
+      const key = `${sessionId}:${id}`
+      return consumedIds.has(key) || pendingConsumedIds.includes(key)
+    }
     const match = candidates.find(
-      (row) => row.body === text && !consumedIds.has(`${sessionId}:${row.id}`)
+      (row) => row.body === text && !isAlreadyClaimed(row.id)
     )
     if (!match) return false
-    consumedIds.add(`${sessionId}:${match.id}`)
+    pendingConsumedIds.push(`${sessionId}:${match.id}`)
     return true
   }
 }
@@ -168,14 +183,25 @@ async function processLine(
     updateJsonlOffset(dependencies.db, session.id, offsetAfter)
     return
   }
+  const pendingConsumedIds: string[] = []
   const items =
     parsed.kind === 'assistant'
       ? formatAssistantEntry(parsed.content)
       : formatUserEntry(
           parsed.content,
-          makeEchoMatcher(dependencies.db, session.id, consumedInputQueueIds)
+          makeEchoMatcher(
+            dependencies.db,
+            session.id,
+            consumedInputQueueIds,
+            pendingConsumedIds
+          )
         )
   await postItems(thread, items)
+  // Only merge matched echo IDs into the shared set once the whole line's
+  // post has succeeded — see the doc comment on makeEchoMatcher.
+  for (const id of pendingConsumedIds) {
+    consumedInputQueueIds.add(id)
+  }
   updateJsonlOffset(dependencies.db, session.id, offsetAfter)
 }
 

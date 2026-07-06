@@ -10,10 +10,13 @@ import {
   type LogSyncDependencies,
 } from './log-sync-worker'
 
-/** Waits until `predicate()` is true or `timeoutMs` elapses, polling every 20ms. */
-async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+/** Waits until `isConditionMet()` is true or `timeoutMs` elapses, polling every 20ms. */
+async function waitFor(
+  isConditionMet: () => boolean,
+  timeoutMs = 3000
+): Promise<void> {
   const start = Date.now()
-  while (!predicate()) {
+  while (!isConditionMet()) {
     if (Date.now() - start > timeoutMs) {
       throw new Error('waitFor timed out')
     }
@@ -44,7 +47,9 @@ describe('runLogSyncCycle', () => {
   let jsonlPath: string
 
   beforeEach(() => {
-    temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'log-sync-worker-test-'))
+    temporaryDirectory = mkdtempSync(
+      path.join(tmpdir(), 'log-sync-worker-test-')
+    )
     jsonlPath = path.join(temporaryDirectory, 'session.jsonl')
   })
 
@@ -61,7 +66,7 @@ describe('runLogSyncCycle', () => {
     const thread: DiscordThread = { send, sendTyping }
     const dependencies: LogSyncDependencies = {
       db,
-      getThread: async () => thread,
+      getThread: () => Promise.resolve(thread),
       pollIntervalMs: 50,
     }
 
@@ -76,7 +81,9 @@ describe('runLogSyncCycle', () => {
     await waitFor(() => send.mock.calls.length > 0)
     expect(send).toHaveBeenCalledWith({ content: 'hello world' })
     await waitFor(() => {
-      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
@@ -97,10 +104,12 @@ describe('runLogSyncCycle', () => {
     const thread: DiscordThread = { send, sendTyping: vi.fn() }
     const dependencies: LogSyncDependencies = {
       db,
-      getThread: async () => thread,
+      getThread: () => Promise.resolve(thread),
       pollIntervalMs: 50,
     }
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
 
     await runLogSyncCycle(dependencies)
     const line =
@@ -111,7 +120,9 @@ describe('runLogSyncCycle', () => {
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => callCount >= 1)
-    let row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+    let row = db
+      .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+      .get('session-1') as {
       jsonl_offset: number
     }
     expect(row.jsonl_offset).toBe(0)
@@ -121,7 +132,9 @@ describe('runLogSyncCycle', () => {
     writeFileSync(jsonlPath, line)
     await waitFor(() => callCount >= 2, 5000)
     await waitFor(() => {
-      row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+      row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
@@ -142,7 +155,7 @@ describe('runLogSyncCycle', () => {
     const thread: DiscordThread = { send, sendTyping: vi.fn() }
     const dependencies: LogSyncDependencies = {
       db,
-      getThread: async () => thread,
+      getThread: () => Promise.resolve(thread),
       pollIntervalMs: 50,
     }
 
@@ -155,7 +168,9 @@ describe('runLogSyncCycle', () => {
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => {
-      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
@@ -180,10 +195,12 @@ describe('runLogSyncCycle', () => {
     const thread: DiscordThread = { send, sendTyping: vi.fn() }
     const dependencies: LogSyncDependencies = {
       db,
-      getThread: async () => thread,
+      getThread: () => Promise.resolve(thread),
       pollIntervalMs: 50,
     }
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
 
     await runLogSyncCycle(dependencies)
     const line1 =
@@ -205,7 +222,9 @@ describe('runLogSyncCycle', () => {
     // before line2 threw).
     await waitFor(() => callCount >= 2)
     await waitFor(() => {
-      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(line1, 'utf8')
@@ -219,7 +238,9 @@ describe('runLogSyncCycle', () => {
     // start).
     writeFileSync(jsonlPath, batch)
     await waitFor(() => {
-      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(batch, 'utf8')
@@ -246,7 +267,7 @@ describe('runLogSyncCycle', () => {
     const thread: DiscordThread = { send, sendTyping: vi.fn() }
     const dependencies: LogSyncDependencies = {
       db,
-      getThread: async () => thread,
+      getThread: () => Promise.resolve(thread),
       pollIntervalMs: 50,
     }
 
@@ -260,6 +281,86 @@ describe('runLogSyncCycle', () => {
 
     await waitFor(() => send.mock.calls.length > 0)
     expect(send).toHaveBeenCalledWith({ content: 'typed in tmux' })
+    db.close()
+  })
+
+  it('does not lose or duplicate an echo when a later block in the same line fails and retries', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    db.prepare(
+      `INSERT INTO input_queue (session_id, source, body, state, created_at)
+       VALUES ('session-1', 'user-1', 'from discord', 'sent', 1)`
+    ).run()
+    let callCount = 0
+    const send = vi.fn().mockImplementation(() => {
+      callCount += 1
+      // The 2nd content block's post (the non-echo text) fails on the first
+      // attempt, but succeeds afterwards.
+      if (callCount === 1) return Promise.reject(new Error('discord API error'))
+      return Promise.resolve(undefined)
+    })
+    const thread: DiscordThread = { send, sendTyping: vi.fn() }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'text', text: 'from discord' },
+            { type: 'text', text: 'not an echo' },
+          ],
+        },
+      }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    // First attempt: the echo block is suppressed (not sent), so the only
+    // `send` call is for the non-echo block, which fails. jsonl_offset must
+    // not advance.
+    await waitFor(() => callCount >= 1)
+    const row = db
+      .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+      .get('session-1') as {
+      jsonl_offset: number
+    }
+    expect(row.jsonl_offset).toBe(0)
+
+    // A no-op append still triggers a change event on most platforms and
+    // forces the tailer to retry the same unconfirmed line.
+    writeFileSync(jsonlPath, line)
+    await waitFor(() => {
+      const retriedRow = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return retriedRow.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    }, 5000)
+
+    // The echoed block must never have been sent, on either the failed
+    // first attempt or the successful retry: if the echo-consumed marker
+    // were (incorrectly) recorded before the line's post fully succeeded,
+    // the retry would re-evaluate `isEcho('from discord')` as `false` and
+    // post it as a duplicate.
+    const echoCalls = send.mock.calls.filter(
+      (call) => (call[0] as { content?: string }).content === 'from discord'
+    )
+    expect(echoCalls).toHaveLength(0)
+    // The non-echo block is attempted on both the failed first try and the
+    // successful retry (2 `send` calls total: 1 rejection + 1 success) —
+    // this is a single logical post that failed once and succeeded once,
+    // not a duplicate post to Discord.
+    expect(callCount).toBe(2)
+    expect(send).toHaveBeenCalledWith({ content: 'not an echo' })
+
+    errorSpy.mockRestore()
     db.close()
   })
 })
