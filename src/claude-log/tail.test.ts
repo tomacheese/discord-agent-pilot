@@ -1,8 +1,29 @@
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  type FSWatcher,
+} from 'node:fs'
+import * as fsModule from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createJsonlTailer, type TailedLine } from './tail'
+
+/**
+ * Mocks the `node:fs` `watch` export so tests can force it to throw
+ * synchronously or capture the returned `FSWatcher` to trigger its `'error'`
+ * event. `importOriginal` is used so every other `node:fs` export (used by
+ * `tail.ts` and this test file's own fixtures) keeps its real behavior.
+ */
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    watch: vi.fn(actual.watch),
+  }
+})
 
 /** Waits until `isConditionMet()` is true or `timeoutMs` elapses, polling every 20ms. */
 async function waitFor(
@@ -133,6 +154,63 @@ describe('createJsonlTailer', () => {
     await waitFor(() => received.length > 0, 5000)
     tailer.stop()
     errorSpy.mockRestore()
+
+    expect(received[0]).toEqual([{ text: '{"a":1}', offsetAfter: 8 }])
+  })
+
+  it('falls back to polling and still detects new lines when fs.watch throws synchronously', async () => {
+    writeFileSync(filePath, '')
+    const watchMock = vi.mocked(fsModule.watch)
+    watchMock.mockImplementationOnce(() => {
+      throw new Error('simulated fs.watch failure')
+    })
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(
+      filePath,
+      0,
+      (lines) => {
+        received.push(lines)
+        return Promise.resolve()
+      },
+      50
+    )
+    tailer.start()
+    appendFileSync(filePath, '{"a":1}\n')
+    await waitFor(() => received.length > 0, 5000)
+    tailer.stop()
+    warnSpy.mockRestore()
+
+    expect(received[0]).toEqual([{ text: '{"a":1}', offsetAfter: 8 }])
+  })
+
+  it('falls back to polling and still detects new lines after fs.watch emits an error event', async () => {
+    writeFileSync(filePath, '')
+    const watchMock = vi.mocked(fsModule.watch)
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(
+      filePath,
+      0,
+      (lines) => {
+        received.push(lines)
+        return Promise.resolve()
+      },
+      50
+    )
+    tailer.start()
+    await waitFor(() => watchMock.mock.results.length > 0)
+    const watcher = watchMock.mock.results[0].value as FSWatcher
+    watcher.emit('error', new Error('simulated watch error'))
+
+    appendFileSync(filePath, '{"a":1}\n')
+    await waitFor(() => received.length > 0, 5000)
+    tailer.stop()
+    warnSpy.mockRestore()
 
     expect(received[0]).toEqual([{ text: '{"a":1}', offsetAfter: 8 }])
   })

@@ -4,7 +4,7 @@ import type { AssistantContentBlock, UserContentBlock } from './parse'
 /** A single unit of Discord output derived from one or more JSONL content blocks. */
 export type PostItem =
   | { kind: 'typing' } // a thinking block: send a typing indicator, no message
-  | { kind: 'messages'; texts: string[] } // pre-split plain-text messages (max 5)
+  | { kind: 'messages'; texts: string[] } // pre-split plain-text messages (at most `MAX_TEXT_MESSAGES`)
   | { kind: 'diff-inline'; header: string; diffBlock: string } // rendered as a ```diff``` fenced block
   | { kind: 'diff-file'; header: string; filename: string; content: string } // posted as a file attachment
 
@@ -120,7 +120,7 @@ function buildDiffItem(
   return { kind: 'diff-file', header, filename, content: diffBlock }
 }
 
-/** Formats a single `tool_use` block into one or more PostItems (summary, plus diff for Edit/Write). */
+/** Formats a single `tool_use` block into one or more PostItems (summary, plus a diff for tools that produce one). */
 function formatToolUse(block: {
   name: string
   input: Record<string, unknown>

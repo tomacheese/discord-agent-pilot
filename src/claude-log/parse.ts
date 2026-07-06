@@ -25,6 +25,7 @@ export type UserContentBlock =
     }
   | { type: 'text'; text: string }
 
+/** The shape of a raw content block before type-narrowing, with all fields optional and untyped. */
 interface RawContentBlock {
   type?: unknown
   text?: unknown
@@ -65,6 +66,7 @@ function extractToolResultContent(raw: unknown): string {
   return ''
 }
 
+/** Narrows an `assistant` entry's raw `message.content[]` into typed `AssistantContentBlock[]`, dropping unrecognized blocks. */
 function parseAssistantContent(raw: unknown): AssistantContentBlock[] {
   const blocks: AssistantContentBlock[] = []
   for (const block of getContentBlocks(raw)) {
@@ -90,6 +92,7 @@ function parseAssistantContent(raw: unknown): AssistantContentBlock[] {
   return blocks
 }
 
+/** Narrows a `user` entry's raw `message.content[]` into typed `UserContentBlock[]`, dropping unrecognized blocks. */
 function parseUserContent(raw: unknown): UserContentBlock[] {
   const blocks: UserContentBlock[] = []
   for (const block of getContentBlocks(raw)) {

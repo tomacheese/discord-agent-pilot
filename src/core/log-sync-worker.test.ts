@@ -363,4 +363,103 @@ describe('runLogSyncCycle', () => {
     errorSpy.mockRestore()
     db.close()
   })
+
+  it('does not lose lines when getThread resolves undefined once, then resolves a thread on retry', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const send = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = { send, sendTyping: vi.fn() }
+    let threadFetchCount = 0
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => {
+        threadFetchCount += 1
+        if (threadFetchCount === 1) return Promise.resolve(undefined)
+        return Promise.resolve(thread)
+      },
+      pollIntervalMs: 50,
+    }
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'hello again' }] },
+      }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    // First attempt: getThread resolves undefined, so onLines must reject
+    // (not silently return) and jsonl_offset must not advance.
+    await waitFor(() => threadFetchCount >= 1)
+    let row = db
+      .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+      .get('session-1') as { jsonl_offset: number }
+    expect(row.jsonl_offset).toBe(0)
+
+    // A no-op append still triggers a change event on most platforms and
+    // forces the tailer to retry the same unconfirmed batch, this time with
+    // a thread available.
+    writeFileSync(jsonlPath, line)
+    await waitFor(() => send.mock.calls.length > 0, 5000)
+    expect(send).toHaveBeenCalledWith({ content: 'hello again' })
+    await waitFor(() => {
+      row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+
+    errorSpy.mockRestore()
+    db.close()
+  })
+
+  it('escapes embedded triple-backtick sequences in a diff-inline post so they cannot break out of the fence', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const send = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = { send, sendTyping: vi.fn() }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tool-1',
+              name: 'Edit',
+              input: {
+                file_path: '/tmp/file.ts',
+                old_string: 'a',
+                new_string: '```danger```',
+              },
+            },
+          ],
+        },
+      }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => send.mock.calls.length >= 2)
+    const diffCall = send.mock.calls.find((call) =>
+      (call[0] as { content?: string }).content?.startsWith('```diff\n')
+    )
+    expect(diffCall).toBeDefined()
+    const content = (diffCall?.[0] as { content: string }).content
+    const body = content.slice('```diff\n'.length, -'\n```'.length)
+    // The embedded ``` in `new_string` must not survive as a raw
+    // triple-backtick sequence, or it would close the fence early.
+    expect(body.includes('```')).toBe(false)
+    db.close()
+  })
 })

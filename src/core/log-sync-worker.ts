@@ -7,11 +7,14 @@ import {
 } from '../claude-log/format'
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
 
-/** A single Discord post: plain text and/or file attachments. At least one of `content`/`files` must be set. */
-export interface SendInput {
-  content?: string
-  files?: { name: string; data: string | Buffer }[]
-}
+/**
+ * A single Discord post: plain text and/or file attachments. The union
+ * requires at least one of `content`/`files` to be set, enforced at compile
+ * time.
+ */
+export type SendInput =
+  | { content: string; files?: { name: string; data: string | Buffer }[] }
+  | { content?: string; files: { name: string; data: string | Buffer }[] }
 
 /** The subset of a Discord thread's API this worker needs. */
 export interface DiscordThread {
@@ -19,6 +22,7 @@ export interface DiscordThread {
   sendTyping: () => Promise<void>
 }
 
+/** Dependencies injected into the log sync worker: DB access, thread resolution, and the caller's poll interval. */
 export interface LogSyncDependencies {
   db: Database.Database
   getThread: (threadId: string) => Promise<DiscordThread | undefined>
@@ -26,6 +30,7 @@ export interface LogSyncDependencies {
   pollIntervalMs: number
 }
 
+/** The subset of a `sessions` row needed to tail its JSONL file and sync it to Discord. */
 interface SessionRowForSync {
   id: string
   threadId: string
@@ -33,11 +38,13 @@ interface SessionRowForSync {
   jsonlOffset: number
 }
 
+/** An `input_queue` row in `state = 'sent'`, as read for echo matching. */
 interface PendingInputQueueRow {
   id: number
   body: string
 }
 
+/** Reads all sessions that are not `closed`, i.e. eligible for JSONL tailing. */
 function findActiveSessions(db: Database.Database): SessionRowForSync[] {
   return db
     .prepare(
@@ -47,6 +54,7 @@ function findActiveSessions(db: Database.Database): SessionRowForSync[] {
     .all() as SessionRowForSync[]
 }
 
+/** Persists `offset` as the new `jsonl_offset` for `sessionId`. */
 function updateJsonlOffset(
   db: Database.Database,
   sessionId: string,
@@ -66,6 +74,7 @@ function getJsonlOffset(db: Database.Database, sessionId: string): number {
   return row?.jsonlOffset ?? 0
 }
 
+/** Reads all `input_queue` rows for `sessionId` still in `state = 'sent'` (candidates for echo matching). */
 function findUnconsumedSentInput(
   db: Database.Database,
   sessionId: string
@@ -129,7 +138,10 @@ async function postItem(thread: DiscordThread, item: PostItem): Promise<void> {
       return
     }
     case 'diff-inline': {
-      await thread.send({ content: '```diff\n' + item.diffBlock + '\n```' })
+      // Neutralize any triple-backtick sequence embedded in the diff content
+      // so it cannot prematurely close the surrounding ```diff fence.
+      const safeDiffBlock = item.diffBlock.replaceAll('```', '`​``')
+      await thread.send({ content: '```diff\n' + safeDiffBlock + '\n```' })
       return
     }
     case 'diff-file': {
@@ -137,13 +149,14 @@ async function postItem(thread: DiscordThread, item: PostItem): Promise<void> {
         content: item.header,
         files: [{ name: item.filename, data: item.content }],
       })
-      // Explicit return for consistency with the other switch cases below.
+      // Explicit return for consistency with the other switch cases above.
       // eslint-disable-next-line no-useless-return
       return
     }
   }
 }
 
+/** Posts each `PostItem` in `items` to `thread`, in order. */
 async function postItems(
   thread: DiscordThread,
   items: PostItem[]
@@ -153,6 +166,7 @@ async function postItems(
   }
 }
 
+/** Per-`LogSyncDependencies` mutable state: running tailers and echo-consumption bookkeeping. */
 interface WorkerState {
   tailers: Map<string, JsonlTailer>
   consumedInputQueueIds: Set<string>
@@ -160,6 +174,7 @@ interface WorkerState {
 
 const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
 
+/** Returns the `WorkerState` for `dependencies`, creating and caching an empty one on first use. */
 function getState(dependencies: LogSyncDependencies): WorkerState {
   let state = stateByDependencies.get(dependencies)
   if (!state) {
@@ -230,13 +245,23 @@ function reconcileTailers(
       session.jsonlOffset,
       async (lines) => {
         const thread = await dependencies.getThread(session.threadId)
-        if (!thread) return
+        if (!thread) {
+          // Reject (rather than silently returning) so `tail.ts` retries this
+          // batch on the next detected change instead of permanently
+          // advancing its in-memory offset past it (see the `onLines`
+          // contract documented on `createJsonlTailer`).
+          throw new Error(`Thread ${session.threadId} not found; will retry`)
+        }
+        // Read the persisted offset once per batch (rather than once per
+        // line): nothing else can mutate this session's offset concurrently
+        // while this callback is running, since `tail.ts` serializes calls
+        // via `processingChain` and `index.ts` guards against overlapping
+        // cycles. The local variable is then kept in sync with what
+        // `processLine` persists after each successfully processed line.
+        let currentOffset = getJsonlOffset(dependencies.db, session.id)
         for (const line of lines) {
-          // Always re-read the persisted offset: a retried batch may have
-          // already had its earlier lines posted and committed before a
-          // later line failed, and a prior line in this same loop iteration
-          // may itself have just advanced it further.
-          const currentOffset = getJsonlOffset(dependencies.db, session.id)
+          // A retried batch may have already had its earlier lines posted
+          // and committed before a later line failed; skip those.
           if (line.offsetAfter <= currentOffset) continue
           await processLine(
             dependencies,
@@ -246,8 +271,10 @@ function reconcileTailers(
             line.text,
             line.offsetAfter
           )
+          currentOffset = line.offsetAfter
         }
-      }
+      },
+      dependencies.pollIntervalMs
     )
     tailer.start()
     state.tailers.set(session.id, tailer)

@@ -19,7 +19,7 @@ describe('openRegistryDb', () => {
   it('records the applied migration version', () => {
     const db = openRegistryDb(':memory:')
     const version = db.pragma('user_version', { simple: true })
-    expect(version).toBe(2)
+    expect(version).toBe(3)
     db.close()
   })
 
@@ -41,7 +41,7 @@ describe('openRegistryDb', () => {
       db1.close()
       const db2 = openRegistryDb(dbPath)
       const version = db2.pragma('user_version', { simple: true })
-      expect(version).toBe(2)
+      expect(version).toBe(3)
       db2.close()
     })
   })
@@ -59,10 +59,10 @@ describe('input_queue migration', () => {
     db.close()
   })
 
-  it('bumps user_version to 2', () => {
+  it('bumps user_version to the latest migration', () => {
     const db = openRegistryDb(':memory:')
     const version = db.pragma('user_version', { simple: true })
-    expect(version).toBe(2)
+    expect(version).toBe(3)
     db.close()
   })
 
@@ -88,6 +88,19 @@ describe('input_queue migration', () => {
       body: 'hello',
       state: 'sent',
     })
+    db.close()
+  })
+})
+
+describe('input_queue index migration', () => {
+  it('creates an index on input_queue(session_id, state)', () => {
+    const db = openRegistryDb(':memory:')
+    const row = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'input_queue'"
+      )
+      .get()
+    expect(row).toBeDefined()
     db.close()
   })
 })

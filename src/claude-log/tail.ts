@@ -100,6 +100,7 @@ export function createJsonlTailer(
       })
   }
 
+  /** Starts the polling fallback (idempotent: no-ops if already polling). */
   function startPolling(): void {
     if (pollTimer) return
     pollTimer = setInterval(check, pollIntervalMs)
@@ -112,12 +113,20 @@ export function createJsonlTailer(
         watcher = watch(filePath, () => {
           check()
         })
-        watcher.on('error', () => {
+        watcher.on('error', (error: unknown) => {
+          console.warn(
+            `fs.watch reported an error for ${filePath}, falling back to polling:`,
+            error
+          )
           watcher?.close()
           watcher = undefined
           startPolling()
         })
-      } catch {
+      } catch (error: unknown) {
+        console.warn(
+          `fs.watch failed to start for ${filePath}, falling back to polling:`,
+          error
+        )
         startPolling()
       }
       check()

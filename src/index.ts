@@ -72,6 +72,10 @@ async function main(): Promise<void> {
               attachment: toAttachmentData(file.data),
               name: file.name,
             })),
+            // Synced content originates from the JSONL log (assistant text,
+            // tool output) rather than the operator, so mentions embedded in
+            // it must never trigger real Discord notifications.
+            allowedMentions: { parse: [] },
           }),
         sendTyping: () => channel.sendTyping(),
       }
