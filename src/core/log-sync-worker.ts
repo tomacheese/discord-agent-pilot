@@ -196,7 +196,12 @@ async function processLine(
   offsetAfter: number
 ): Promise<void> {
   const parsed = parseJsonlLine(lineText)
-  if (!parsed || parsed.kind === 'ignored') {
+  if (
+    !parsed ||
+    parsed.kind === 'ignored' ||
+    parsed.kind === 'agent-name' ||
+    parsed.kind === 'ai-title'
+  ) {
     updateJsonlOffset(dependencies.db, session.id, offsetAfter)
     return
   }
