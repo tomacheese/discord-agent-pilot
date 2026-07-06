@@ -261,4 +261,52 @@ describe('runDetectionCycle', () => {
     )
     warn.mockRestore()
   })
+
+  // Regression test for a bug found during real-environment integration
+  // testing (Issue #13): a Claude Code session running under workspaceRoots
+  // with a config dir not listed in `configDirs` makes
+  // resolveContainerConfigDirectory throw. Since `runDetectionCycle`
+  // previously awaited all panes via `Promise.all`, that single rejection
+  // failed the whole cycle every poll — logged as "Detection cycle failed"
+  // forever — even though every other pane in the same cycle had already
+  // been processed successfully.
+  it('does not let one pane throwing prevent other panes in the same cycle from being registered', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([
+      { sessionName: 'tmux-1', paneId: '%0', pid: '100' },
+      { sessionName: 'tmux-2', paneId: '%1', pid: '101' },
+    ])
+    vi.mocked(findClaudeProcessPid).mockImplementation((_procRoot, rootPid) =>
+      Promise.resolve(rootPid === '100' ? '300' : '301')
+    )
+    vi.mocked(readProcessEnviron).mockImplementation((_procRoot, pid) =>
+      Promise.resolve(
+        pid === '300'
+          ? { CLAUDE_CONFIG_DIR: '/home/user/.claude' }
+          : { CLAUDE_CONFIG_DIR: '/home/other/.claude-work' }
+      )
+    )
+    vi.mocked(resolveContainerConfigDirectory).mockImplementation(
+      (_config, hostConfigDirectory) => {
+        if (hostConfigDirectory === '/home/other/.claude-work') {
+          throw new Error(
+            'No configDirs mapping for host path: /home/other/.claude-work'
+          )
+        }
+        return '/host/claude-config'
+      }
+    )
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(
+      runDetectionCycle(dependencies, makeConfig())
+    ).resolves.toBeUndefined()
+
+    expect(createSessionThread).toHaveBeenCalledWith('session-1')
+    error.mockRestore()
+  })
 })

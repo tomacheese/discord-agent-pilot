@@ -218,15 +218,32 @@ async function processPane(
   )
 }
 
-/** Runs one tmux detection / sessionId resolution / registration cycle. */
+/**
+ * Runs one tmux detection / sessionId resolution / registration cycle.
+ *
+ * Panes are processed independently via `Promise.allSettled` rather than
+ * `Promise.all`: a single pane that fails (e.g. a Claude Code process whose
+ * config dir isn't listed in `configDirs`, which is expected whenever an
+ * unrelated session shares the same host tmux server) must not prevent the
+ * other panes in the same cycle from being detected and registered, nor be
+ * reported as if the whole cycle failed.
+ */
 export async function runDetectionCycle(
   dependencies: OrchestratorDependencies,
   config: Config
 ): Promise<void> {
   const panes = await listAllTmuxPanes(dependencies.socketPath)
-  await Promise.all(
+  const results = await Promise.allSettled(
     panes.map((pane) =>
       processPane(dependencies, config, pane.sessionName, pane.pid)
     )
   )
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      console.error(
+        `Failed to process pane ${panes[index]?.sessionName ?? '(unknown)'}:`,
+        result.reason
+      )
+    }
+  }
 }
