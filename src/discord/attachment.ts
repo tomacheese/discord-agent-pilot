@@ -1,12 +1,13 @@
 /**
- * discord.js の `AttachmentBuilder`/`send` に渡す `attachment` フィールドへ変換する。
+ * Converts file content to the `attachment` field passed to discord.js's
+ * `AttachmentBuilder`/`send`.
  *
- * discord.js は非 URL の文字列を「ファイルシステムパス」として解釈し、
- * `fs.stat` できなければ `FileNotFound` を投げる。`PostItem` の
- * `diff-file` の `data` は diff テキストそのもの(パスではない)なので、
- * 文字列の場合は必ず `Buffer` へ変換してから渡す必要がある。
- * @param data - 添付するファイルの内容(文字列または Buffer)
- * @returns discord.js の `attachment` に渡せる Buffer
+ * discord.js interprets a non-URL string as a filesystem path and throws
+ * `FileNotFound` if `fs.stat` can't find it. A `diff-file` `PostItem`'s
+ * `data` is the diff text itself (not a path), so string input must always
+ * be converted to a `Buffer` before being passed through.
+ * @param data - The attachment content (string or Buffer)
+ * @returns A Buffer suitable for discord.js's `attachment` field
  */
 export function toAttachmentData(data: string | Buffer): Buffer {
   return typeof data === 'string' ? Buffer.from(data) : data
