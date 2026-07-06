@@ -145,8 +145,10 @@ async function postItem(thread: DiscordThread, item: PostItem): Promise<void> {
       return
     }
     case 'diff-file': {
+      // The header was already posted as a separate `messages` PostItem by
+      // formatAssistantEntry's summaryItem, so it is not repeated here as
+      // the file's caption (mirrors diff-inline, which also omits it).
       await thread.send({
-        content: item.header,
         files: [{ name: item.filename, data: item.content }],
       })
       // Explicit return for consistency with the other switch cases above.
