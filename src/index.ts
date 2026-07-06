@@ -3,6 +3,7 @@ import { loadConfig } from './config/load'
 import { openRegistryDb as openRegistryDatabase } from './registry/db'
 import { createDiscordClient } from './discord/client'
 import { createParentChannel } from './discord/parent-channel'
+import { toAttachmentData } from './discord/attachment'
 import { AmbiguityTracker } from './core/ambiguity'
 import {
   runDetectionCycle,
@@ -68,7 +69,7 @@ async function main(): Promise<void> {
           channel.send({
             content: input.content,
             files: input.files?.map((file) => ({
-              attachment: file.data,
+              attachment: toAttachmentData(file.data),
               name: file.name,
             })),
           }),
