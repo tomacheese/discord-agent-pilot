@@ -22,5 +22,3 @@ src/
   tmux/       tmuxセッション列挙・プロセスツリー検査・sessionId解決
   core/       上記を束ねるorchestrator(定期ポーリング)
 ```
-
-詳細は Confluence の設計仕様書を参照。
