@@ -80,6 +80,20 @@ function isWithinWorkspaceRoots(
 }
 
 /**
+ * Slugifies `cwd` into the directory name real Claude Code uses under
+ * `~/.claude/projects/` for that working directory. Confirmed by inspecting
+ * actual `~/.claude/projects/` entries: both `/` and `.` are replaced with
+ * `-` (e.g. `/mnt/ssd/repos/github.com/foo` becomes
+ * `-mnt-ssd-repos-github-com-foo`). Replacing only `/` (a bug found during
+ * real-environment integration testing, Issue #13) leaves dots in the
+ * result, which never matches the real on-disk directory whenever `cwd`
+ * contains one — a case this very repository's own checkout path hits.
+ */
+function slugifyProjectCwd(cwd: string): string {
+  return cwd.replaceAll(/[./]/g, '-')
+}
+
+/**
  * Registers `sessionId` (creating its Discord thread) unless it is already
  * registered. Guards against concurrent registration of the
  * same sessionId from a parallel `processPane` call via
@@ -111,7 +125,7 @@ async function registerSession(
       tmuxPanePid: panePid,
       cwd,
       configDir: containerConfigDirectory,
-      jsonlPath: `${containerConfigDirectory}/projects/${cwd.replaceAll('/', '-')}/${sessionId}.jsonl`,
+      jsonlPath: `${containerConfigDirectory}/projects/${slugifyProjectCwd(cwd)}/${sessionId}.jsonl`,
       jsonlOffset: 0,
       status: 'discovered',
       createdAt: now,
@@ -218,15 +232,33 @@ async function processPane(
   )
 }
 
-/** Runs one tmux detection / sessionId resolution / registration cycle. */
+/**
+ * Runs one tmux detection / sessionId resolution / registration cycle.
+ *
+ * Panes are processed independently via `Promise.allSettled` rather than
+ * `Promise.all`: a single pane that fails (e.g. a Claude Code process whose
+ * config dir isn't listed in `configDirs`, which is expected whenever an
+ * unrelated session shares the same host tmux server) must not prevent the
+ * other panes in the same cycle from being detected and registered, nor be
+ * reported as if the whole cycle failed.
+ */
 export async function runDetectionCycle(
   dependencies: OrchestratorDependencies,
   config: Config
 ): Promise<void> {
   const panes = await listAllTmuxPanes(dependencies.socketPath)
-  await Promise.all(
+  const results = await Promise.allSettled(
     panes.map((pane) =>
       processPane(dependencies, config, pane.sessionName, pane.pid)
     )
   )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const pane = panes[index]
+    console.error(
+      `Failed to process pane ${pane.sessionName} ` +
+        `(paneId=${pane.paneId}, pid=${pane.pid}):`,
+      result.reason
+    )
+  }
 }
