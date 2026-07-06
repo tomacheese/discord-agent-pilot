@@ -253,11 +253,12 @@ export async function runDetectionCycle(
     )
   )
   for (const [index, result] of results.entries()) {
-    if (result.status === 'rejected') {
-      console.error(
-        `Failed to process pane ${panes[index]?.sessionName ?? '(unknown)'}:`,
-        result.reason
-      )
-    }
+    if (result.status !== 'rejected') continue
+    const pane = panes[index]
+    console.error(
+      `Failed to process pane ${pane.sessionName} ` +
+        `(paneId=${pane.paneId}, pid=${pane.pid}):`,
+      result.reason
+    )
   }
 }

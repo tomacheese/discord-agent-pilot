@@ -66,7 +66,8 @@ describe('listAllTmuxPanes', () => {
 
     await listAllTmuxPanes('/tmp/tmux-host/default', exec)
 
-    const formatArgument = exec.mock.calls[0]?.[1][3]
+    expect(exec).toHaveBeenCalledTimes(1)
+    const formatArgument = exec.mock.calls[0][1][3]
     // eslint-disable-next-line no-control-regex
     expect(formatArgument).not.toMatch(/[\u{0}-\u{1F}\u{7F}]/u)
   })
