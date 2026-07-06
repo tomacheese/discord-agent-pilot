@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { Config } from '../config/schema'
 import type { ParentChannel } from '../discord/parent-channel'
+import { buildFallbackThreadTitle } from '../discord/thread-title'
 import {
   findSessionById,
   insertSession,
@@ -101,8 +102,9 @@ async function registerSession(
   dependencies.registeringSessionIds.add(sessionId)
 
   try {
-    const thread =
-      await dependencies.parentChannel.createSessionThread(sessionId)
+    const thread = await dependencies.parentChannel.createSessionThread(
+      buildFallbackThreadTitle(cwd, tmuxSession)
+    )
     const now = Date.now()
     const row: SessionRow = {
       id: sessionId,
