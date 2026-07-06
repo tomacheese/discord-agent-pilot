@@ -6,6 +6,11 @@ import {
   type PostItem,
 } from '../claude-log/format'
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
+import {
+  updateThreadNameSource,
+  type ThreadNameSource,
+} from '../registry/sessions'
+import { truncateThreadTitle } from '../discord/thread-title'
 
 /**
  * A single Discord post: plain text and/or file attachments. The union
@@ -20,6 +25,7 @@ export type SendInput =
 export interface DiscordThread {
   send: (input: SendInput) => Promise<unknown>
   sendTyping: () => Promise<void>
+  setName: (name: string) => Promise<unknown>
 }
 
 /** Dependencies injected into the log sync worker: DB access, thread resolution, and the caller's poll interval. */
@@ -36,6 +42,7 @@ interface SessionRowForSync {
   threadId: string
   jsonlPath: string
   jsonlOffset: number
+  threadNameSource: ThreadNameSource
 }
 
 /** An `input_queue` row in `state = 'sent'`, as read for echo matching. */
@@ -48,7 +55,8 @@ interface PendingInputQueueRow {
 function findActiveSessions(db: Database.Database): SessionRowForSync[] {
   return db
     .prepare(
-      `SELECT id, thread_id AS threadId, jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset
+      `SELECT id, thread_id AS threadId, jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset,
+              thread_name_source AS threadNameSource
        FROM sessions WHERE status != 'closed'`
     )
     .all() as SessionRowForSync[]
@@ -186,6 +194,21 @@ function getState(dependencies: LogSyncDependencies): WorkerState {
   return state
 }
 
+/** Numeric priority of each `ThreadNameSource`, used to decide whether a new title may replace the currently-applied one. */
+const SOURCE_RANK: Record<ThreadNameSource, number> = {
+  fallback: 0,
+  'ai-title': 1,
+  'agent-name': 2,
+}
+
+/** Returns true if `candidate` should replace the currently-applied `current` source. */
+function shouldApplyThreadName(
+  current: ThreadNameSource,
+  candidate: ThreadNameSource
+): boolean {
+  return SOURCE_RANK[candidate] >= SOURCE_RANK[current]
+}
+
 /** Processes one JSONL line: parse, format, post, then advance jsonl_offset. Skips ignored/invalid lines while still advancing the offset. */
 async function processLine(
   dependencies: LogSyncDependencies,
@@ -196,12 +219,19 @@ async function processLine(
   offsetAfter: number
 ): Promise<void> {
   const parsed = parseJsonlLine(lineText)
-  if (
-    !parsed ||
-    parsed.kind === 'ignored' ||
-    parsed.kind === 'agent-name' ||
-    parsed.kind === 'ai-title'
-  ) {
+  if (!parsed || parsed.kind === 'ignored') {
+    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    return
+  }
+  if (parsed.kind === 'agent-name' || parsed.kind === 'ai-title') {
+    const candidateSource: ThreadNameSource =
+      parsed.kind === 'agent-name' ? 'agent-name' : 'ai-title'
+    const candidateTitle =
+      parsed.kind === 'agent-name' ? parsed.agentName : parsed.aiTitle
+    if (shouldApplyThreadName(session.threadNameSource, candidateSource)) {
+      await thread.setName(truncateThreadTitle(candidateTitle))
+      updateThreadNameSource(dependencies.db, session.id, candidateSource)
+    }
     updateJsonlOffset(dependencies.db, session.id, offsetAfter)
     return
   }
