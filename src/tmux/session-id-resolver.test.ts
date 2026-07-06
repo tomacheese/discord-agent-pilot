@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Config } from '../config/schema'
 import {
   resolveContainerConfigDirectory,
@@ -43,109 +43,97 @@ describe('resolveContainerConfigDirectory', () => {
   })
 })
 
-function makeFakeProcRoot(startTimeEpochSec: number, pid: string): string {
-  const procRoot = mkdtempSync(path.join(tmpdir(), 'dap-resolver-proc-'))
-  const bootTimeSec = 1000
-  const ticksPerSec = 100
-  const starttimeTicks = Math.round(
-    (startTimeEpochSec - bootTimeSec) * ticksPerSec
-  )
-  mkdirSync(path.join(procRoot, pid))
-  const fields = Array.from({ length: 25 }, () => '0')
-  fields[19] = String(starttimeTicks)
-  writeFileSync(
-    path.join(procRoot, pid, 'stat'),
-    `${pid} (claude) ${fields.join(' ')}`
-  )
-  writeFileSync(
-    path.join(procRoot, 'stat'),
-    `cpu  0 0 0 0\nbtime ${bootTimeSec}\n`
-  )
-  return procRoot
+/**
+ * Builds a minimal fake `/proc/<pid>/stat` line whose 22nd field (process
+ * start time in clock ticks since boot) is `0` — combined with a
+ * `${procRoot}/stat` `btime` line set to "now" (written by each test above),
+ * this places the fake process's start time at "now" for birthtime-diff
+ * comparisons.
+ */
+function buildFakeStat(): string {
+  const fields = Array.from({ length: 52 }, () => '0')
+  fields[0] = '100'
+  fields[1] = '(node)'
+  fields[2] = 'S'
+  return fields.join(' ')
 }
 
 describe('resolveSessionId', () => {
-  it('prefers sessions/<pid>.json when present', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
+  let temporaryRoot: string
+  let containerConfigDirectory: string
+  let procRoot: string
+
+  beforeEach(async () => {
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'session-id-resolver-')
     )
-    mkdirSync(path.join(containerConfigDirectory, 'sessions'), {
-      recursive: true,
-    })
-    writeFileSync(
-      path.join(containerConfigDirectory, 'sessions', '1234.json'),
-      JSON.stringify({ sessionId: 'session-from-marker' })
+    containerConfigDirectory = path.join(temporaryRoot, 'claude-config')
+    procRoot = path.join(temporaryRoot, 'proc')
+    await mkdir(containerConfigDirectory, { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  })
+
+  async function writeMarker(pid: string, sessionId: string): Promise<void> {
+    const sessionsDirectory = path.join(containerConfigDirectory, 'sessions')
+    await mkdir(sessionsDirectory, { recursive: true })
+    await writeFile(
+      path.join(sessionsDirectory, `${pid}.json`),
+      JSON.stringify({ sessionId })
+    )
+  }
+
+  async function writeJsonlFile(
+    projectDirectoryName: string,
+    sessionId: string,
+    birthtimeSourceContent = ''
+  ): Promise<string> {
+    const directory = path.join(
+      containerConfigDirectory,
+      'projects',
+      projectDirectoryName
+    )
+    await mkdir(directory, { recursive: true })
+    const filePath = path.join(directory, `${sessionId}.jsonl`)
+    await writeFile(filePath, birthtimeSourceContent)
+    return filePath
+  }
+
+  it('resolves via the single jsonl file in the cwd-derived directory, replacing both dots and slashes', async () => {
+    // Regression test for Issue #16: the cwd-to-directory-name conversion
+    // must replace `.` as well as `/`, matching real Claude Code's own
+    // slugification — a cwd like this repository's own checkout path
+    // (`github.com`) previously never matched anything.
+    const cwd = '/mnt/ssd/repos/github.com/tomacheese/discord-agent-pilot'
+    const expectedDirectoryName =
+      '-mnt-ssd-repos-github-com-tomacheese-discord-agent-pilot'
+    const jsonlPath = await writeJsonlFile(
+      expectedDirectoryName,
+      'session-only'
     )
 
     const result = await resolveSessionId(
-      '/proc-unused',
+      procRoot,
       containerConfigDirectory,
-      '1234',
-      '/cwd',
+      '100',
+      cwd,
       3000
     )
 
     expect(result).toEqual({
       kind: 'resolved',
-      sessionId: 'session-from-marker',
+      sessionId: 'session-only',
+      jsonlPath,
     })
   })
 
-  it('rejects a marker sessionId containing a path separator', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
-    )
-    mkdirSync(path.join(containerConfigDirectory, 'sessions'), {
-      recursive: true,
-    })
-    writeFileSync(
-      path.join(containerConfigDirectory, 'sessions', '1234.json'),
-      JSON.stringify({ sessionId: '../../etc/passwd' })
-    )
-
-    await expect(
-      resolveSessionId(
-        '/proc-unused',
-        containerConfigDirectory,
-        '1234',
-        '/cwd',
-        3000
-      )
-    ).rejects.toThrow()
-  })
-
-  it('falls back to the single matching jsonl file when no marker exists', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
-    )
-    const projectDirectory = path.join(
-      containerConfigDirectory,
-      'projects',
-      '-mnt-ssd-repos-example'
-    )
-    mkdirSync(projectDirectory, { recursive: true })
-    writeFileSync(path.join(projectDirectory, 'session-only.jsonl'), '{}')
-
+  it('returns unresolved when neither the cwd-derived directory nor any other project directory has a jsonl file', async () => {
     const result = await resolveSessionId(
-      '/proc-unused',
+      procRoot,
       containerConfigDirectory,
-      '1234',
-      '/mnt/ssd/repos/example',
-      3000
-    )
-
-    expect(result).toEqual({ kind: 'resolved', sessionId: 'session-only' })
-  })
-
-  it('returns unresolved when the project directory does not exist', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
-    )
-
-    const result = await resolveSessionId(
-      '/proc-unused',
-      containerConfigDirectory,
-      '1234',
+      '100',
       '/mnt/ssd/repos/example',
       3000
     )
@@ -153,70 +141,164 @@ describe('resolveSessionId', () => {
     expect(result).toEqual({ kind: 'unresolved' })
   })
 
-  it('picks the jsonl file closest to the process start time when unambiguous', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
+  it('falls back to a global search across all project directories when the cwd-derived directory is empty', async () => {
+    // The cwd-derived directory itself is never created — simulates a
+    // worktree cwd switch where the session's real project directory
+    // (from its actual start-time cwd) is a completely different name.
+    const jsonlPath = await writeJsonlFile(
+      '-mnt-ssd-repos-other-project',
+      'session-elsewhere'
     )
-    const projectDirectory = path.join(
-      containerConfigDirectory,
-      'projects',
-      '-mnt-ssd-repos-example'
-    )
-    mkdirSync(projectDirectory, { recursive: true })
-    // Process started at epoch 2000s.
-    const procRoot = makeFakeProcRoot(2000, '1234')
-    writeFileSync(path.join(projectDirectory, 'far.jsonl'), '{}')
-    writeFileSync(path.join(projectDirectory, 'close.jsonl'), '{}')
-    // Nudge mtimes/birthtimes apart: 'far' was created far earlier than the
-    // process start, 'close' right around it. We can't set birthtime
-    // directly, so this test only asserts *a* single sessionId is chosen
-    // (ambiguity threshold behavior is covered separately below) — full
-    // control over birthtime requires OS-level tooling unavailable in a
-    // portable test, so we assert the resolver doesn't throw and returns
-    // one of the two candidates.
+
     const result = await resolveSessionId(
       procRoot,
       containerConfigDirectory,
-      '1234',
+      '100',
       '/mnt/ssd/repos/example',
-      0
+      3000
     )
 
-    expect(result.kind).toBe('resolved')
-    if (result.kind === 'resolved') {
-      expect(['far', 'close']).toContain(result.sessionId)
-    }
+    expect(result).toEqual({
+      kind: 'resolved',
+      sessionId: 'session-elsewhere',
+      jsonlPath,
+    })
   })
 
-  it('returns ambiguous when top two candidates are within the threshold', async () => {
-    const containerConfigDirectory = mkdtempSync(
-      path.join(tmpdir(), 'dap-resolver-config-')
+  it('resolves a marker sessionId via a global filename search when it lives outside the cwd-derived directory', async () => {
+    await writeMarker('100', 'session-from-marker')
+    const jsonlPath = await writeJsonlFile(
+      '-mnt-ssd-repos-other-project',
+      'session-from-marker'
     )
-    const projectDirectory = path.join(
-      containerConfigDirectory,
-      'projects',
-      '-mnt-ssd-repos-example'
-    )
-    mkdirSync(projectDirectory, { recursive: true })
-    const procRoot = makeFakeProcRoot(2000, '1234')
-    writeFileSync(path.join(projectDirectory, 'a.jsonl'), '{}')
-    writeFileSync(path.join(projectDirectory, 'b.jsonl'), '{}')
 
-    // With an effectively infinite threshold, any two candidates count as ambiguous.
     const result = await resolveSessionId(
       procRoot,
       containerConfigDirectory,
-      '1234',
+      '100',
       '/mnt/ssd/repos/example',
-      Number.MAX_SAFE_INTEGER
+      3000
+    )
+
+    expect(result).toEqual({
+      kind: 'resolved',
+      sessionId: 'session-from-marker',
+      jsonlPath,
+    })
+  })
+
+  it('returns unresolved when the marker sessionId has no matching jsonl anywhere', async () => {
+    await writeMarker('100', 'session-nowhere')
+
+    const result = await resolveSessionId(
+      procRoot,
+      containerConfigDirectory,
+      '100',
+      '/mnt/ssd/repos/example',
+      3000
+    )
+
+    expect(result).toEqual({ kind: 'unresolved' })
+  })
+
+  it('rejects a marker sessionId containing a path separator', async () => {
+    await writeMarker('100', '../evil')
+
+    await expect(
+      resolveSessionId(
+        procRoot,
+        containerConfigDirectory,
+        '100',
+        '/mnt/ssd/repos/example',
+        3000
+      )
+    ).rejects.toThrow()
+  })
+
+  it('picks the jsonl file in the cwd-derived directory closest to process start time when unambiguous', async () => {
+    const cwd = '/mnt/ssd/repos/example'
+    const directoryName = '-mnt-ssd-repos-example'
+    const closePath = path.join(
+      containerConfigDirectory,
+      'projects',
+      directoryName,
+      'session-close.jsonl'
+    )
+    const farPath = path.join(
+      containerConfigDirectory,
+      'projects',
+      directoryName,
+      'session-far.jsonl'
+    )
+    await mkdir(path.dirname(closePath), { recursive: true })
+    await writeFile(closePath, '')
+    await writeFile(farPath, '')
+
+    // Backdate the "far" file's mtime far away from "now" (process start,
+    // per the fake /proc root below, is close to "now") so the birthtime
+    // heuristic clearly prefers "close" over "far" beyond the threshold.
+    const farOld = new Date(Date.now() - 10 * 60 * 1000)
+    const { utimes } = await import('node:fs/promises')
+    await utimes(farPath, farOld, farOld)
+
+    await mkdir(procRoot, { recursive: true })
+    await mkdir(path.join(procRoot, '100'), { recursive: true })
+    // readBootTimeEpochMs (src/tmux/proc.ts) reads `${procRoot}/stat`'s
+    // `btime` line, not a `${procRoot}/uptime` file — this must match that
+    // contract or resolveSessionId's ENOENT on this file will fail the test.
+    await writeFile(
+      path.join(procRoot, 'stat'),
+      `cpu  0 0 0 0\nbtime ${Math.floor(Date.now() / 1000)}\n`
+    )
+    await writeFile(path.join(procRoot, '100', 'stat'), buildFakeStat())
+
+    const result = await resolveSessionId(
+      procRoot,
+      containerConfigDirectory,
+      '100',
+      cwd,
+      3000
+    )
+
+    expect(result).toEqual({
+      kind: 'resolved',
+      sessionId: 'session-close',
+      jsonlPath: closePath,
+    })
+  })
+
+  it('returns ambiguous with jsonlPath on every candidate when a global search finds two equally-recent jsonl files', async () => {
+    const pathA = await writeJsonlFile('-mnt-ssd-repos-a', 'session-a')
+    const pathB = await writeJsonlFile('-mnt-ssd-repos-b', 'session-b')
+
+    await mkdir(procRoot, { recursive: true })
+    await mkdir(path.join(procRoot, '100'), { recursive: true })
+    // readBootTimeEpochMs (src/tmux/proc.ts) reads `${procRoot}/stat`'s
+    // `btime` line, not a `${procRoot}/uptime` file — this must match that
+    // contract or resolveSessionId's ENOENT on this file will fail the test.
+    await writeFile(
+      path.join(procRoot, 'stat'),
+      `cpu  0 0 0 0\nbtime ${Math.floor(Date.now() / 1000)}\n`
+    )
+    await writeFile(path.join(procRoot, '100', 'stat'), buildFakeStat())
+
+    const result = await resolveSessionId(
+      procRoot,
+      containerConfigDirectory,
+      '100',
+      '/mnt/ssd/repos/example',
+      3000
     )
 
     expect(result.kind).toBe('ambiguous')
-    if (result.kind === 'ambiguous') {
-      expect(result.candidates.toSorted((a, b) => a.localeCompare(b))).toEqual([
-        'a',
-        'b',
-      ])
-    }
+    if (result.kind !== 'ambiguous') throw new Error('expected ambiguous')
+    expect(
+      result.candidates.toSorted((a, b) =>
+        a.sessionId.localeCompare(b.sessionId)
+      )
+    ).toEqual([
+      { sessionId: 'session-a', jsonlPath: pathA },
+      { sessionId: 'session-b', jsonlPath: pathB },
+    ])
   })
 })
