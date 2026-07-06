@@ -128,5 +128,7 @@ client.once('ready', () => {
   })
 })
 
+// config.yaml's discordToken takes precedence over DISCORD_TOKEN so a
+// deployment can choose either without the other silently overriding it.
 // eslint-disable-next-line no-void
-void client.login(process.env.DISCORD_TOKEN)
+void client.login(config.discordToken ?? process.env.DISCORD_TOKEN)

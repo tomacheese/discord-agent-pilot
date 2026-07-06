@@ -21,6 +21,9 @@ const parentChannelSchema = z.object({
 /** Zod schema for the full discord-agent-pilot `config.yaml` file. */
 export const configSchema = z.object({
   guildId: z.string().min(1),
+  // Optional so DISCORD_TOKEN can still be used instead; index.ts prefers
+  // this field over the environment variable when both are set.
+  discordToken: z.string().min(1).optional(),
   parentChannel: parentChannelSchema,
   allowedUserIds: z.array(z.string().min(1)).min(1),
   workspaceRoots: z.array(z.string().min(1)).min(1),

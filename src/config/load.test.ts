@@ -63,4 +63,17 @@ describe('loadConfig', () => {
     const configPath = writeTemporaryConfig(invalid)
     expect(() => loadConfig(configPath)).toThrow()
   })
+
+  it('leaves discordToken undefined when omitted', () => {
+    const configPath = writeTemporaryConfig(VALID_YAML)
+    const config = loadConfig(configPath)
+    expect(config.discordToken).toBeUndefined()
+  })
+
+  it('parses discordToken when present', () => {
+    const withToken = `guildId: "123456789012345678"\ndiscordToken: "fake-token"\n${VALID_YAML.replace('guildId: "123456789012345678"\n', '')}`
+    const configPath = writeTemporaryConfig(withToken)
+    const config = loadConfig(configPath)
+    expect(config.discordToken).toBe('fake-token')
+  })
 })
