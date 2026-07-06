@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 /**
  * A single entry mapping a host-side CLAUDE_CONFIG_DIR path to its
- * container-side bind-mounted path (§6).
+ * container-side bind-mounted path.
  */
 const configDirectorySchema = z.object({
   hostPath: z.string().min(1),
@@ -11,14 +11,14 @@ const configDirectorySchema = z.object({
 
 /**
  * The single Discord channel this deployment creates per-session threads
- * under (§6/§7).
+ * under.
  */
 const parentChannelSchema = z.object({
   type: z.enum(['forum', 'text']),
   id: z.string().min(1),
 })
 
-/** Zod schema for the full discord-agent-pilot `config.yaml` file (§6). */
+/** Zod schema for the full discord-agent-pilot `config.yaml` file. */
 export const configSchema = z.object({
   guildId: z.string().min(1),
   parentChannel: parentChannelSchema,

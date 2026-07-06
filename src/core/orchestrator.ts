@@ -29,7 +29,7 @@ export interface OrchestratorDependencies {
   /**
    * Channel to post the ambiguity Select menu to. `undefined` when
    * `config.parentChannel.type === 'forum'`, since a `ForumChannel` cannot
-   * be posted to directly (§ Global Constraints) — ambiguous sessions are
+   * be posted to directly — ambiguous sessions are
    * logged and left unresolved in that configuration for Phase 1 (see the
    * forum-skip branch in `processPane` for the exact condition enforced).
    */
@@ -63,7 +63,7 @@ function paneKey(tmuxSession: string, panePid: string): string {
 }
 
 /**
- * Returns true if `cwd` is inside one of `workspaceRoots` (§6). A root
+ * Returns true if `cwd` is inside one of `workspaceRoots`. A root
  * matches if `cwd` equals it exactly or is a subdirectory of it. Trailing
  * slashes on a configured root are trimmed first, since otherwise a root
  * like `/mnt/ssd/repos/` would build the prefix `/mnt/ssd/repos//` and never
@@ -81,7 +81,7 @@ function isWithinWorkspaceRoots(
 
 /**
  * Registers `sessionId` (creating its Discord thread) unless it is already
- * registered (§4 step 6). Guards against concurrent registration of the
+ * registered. Guards against concurrent registration of the
  * same sessionId from a parallel `processPane` call via
  * `dependencies.registeringSessionIds`.
  */
@@ -126,7 +126,7 @@ async function registerSession(
 
 /**
  * Detects and resolves the Claude Code sessionId for a single tmux pane,
- * then registers it (§4 steps 2–6).
+ * then registers it.
  */
 async function processPane(
   dependencies: OrchestratorDependencies,
@@ -218,7 +218,7 @@ async function processPane(
   )
 }
 
-/** Runs one tmux detection / sessionId resolution / registration cycle (§4 steps 1–6). */
+/** Runs one tmux detection / sessionId resolution / registration cycle. */
 export async function runDetectionCycle(
   dependencies: OrchestratorDependencies,
   config: Config

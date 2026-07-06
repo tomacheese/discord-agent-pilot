@@ -80,7 +80,7 @@ export async function listAllTmuxPanes(
 
 /**
  * Resolves the tmux server socket file inside `socketDirectory` (bind-mounted
- * from the host's tmux socket directory, §6/§13.1). Prefers a socket named
+ * from the host's tmux socket directory). Prefers a socket named
  * `default` (tmux's own default socket name) when present; otherwise
  * requires exactly one candidate, since picking an arbitrary entry from a
  * directory with multiple sockets (e.g. multiple tmux servers/users) would

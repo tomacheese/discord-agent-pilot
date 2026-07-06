@@ -2,7 +2,7 @@ import type { ForumChannel, TextChannel, ThreadChannel } from 'discord.js'
 import { ForumParentChannel } from './forum-parent-channel'
 import { TextParentChannel } from './text-parent-channel'
 
-/** Abstraction over a Discord channel that can host per-session threads (§7). */
+/** Abstraction over a Discord channel that can host per-session threads. */
 export interface ParentChannel {
   /** Creates a new thread named `title` for a session. */
   createSessionThread(title: string): Promise<ThreadChannel>

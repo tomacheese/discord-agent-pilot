@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 
 /**
- * A row in the `sessions` table (§5).
+ * A row in the `sessions` table.
  */
 export interface SessionRow {
   id: string

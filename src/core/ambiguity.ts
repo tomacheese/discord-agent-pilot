@@ -2,10 +2,10 @@ import { ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js'
 import type { Config } from '../config/schema'
 import { isAllowedUser } from '../discord/permissions'
 
-/** How long to wait for a human to resolve an ambiguous sessionId prompt before giving up (§4 step 5). */
+/** How long to wait for a human to resolve an ambiguous sessionId prompt before giving up. */
 const AMBIGUITY_PROMPT_TIMEOUT_MS = 5 * 60 * 1000
 
-/** Tracks tmux-detected sessions still waiting on ambiguity resolution (§4 step 5). */
+/** Tracks tmux-detected sessions still waiting on ambiguity resolution. */
 export class AmbiguityTracker {
   private readonly pending = new Map<string, string[]>()
 
@@ -72,7 +72,7 @@ export interface PromptChannel {
 /**
  * Posts a Select menu to `channel` listing `candidates` as sessionId
  * options, and resolves with the sessionId the first *allowed* user
- * selects (§4 step 5). Selections from non-allowed users are rejected with
+ * selects. Selections from non-allowed users are rejected with
  * an ephemeral reply and do not resolve the promise. If no allowed user
  * selects a candidate within `AMBIGUITY_PROMPT_TIMEOUT_MS`, resolves with
  * `undefined` instead of hanging indefinitely.

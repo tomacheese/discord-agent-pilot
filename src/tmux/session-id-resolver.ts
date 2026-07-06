@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { Config } from '../config/schema'
 import { readBootTimeEpochMs, readProcessStartTicks } from './proc'
 
-/** Result of resolving a Claude Code sessionId for a detected tmux/claude process (§4). */
+/** Result of resolving a Claude Code sessionId for a detected tmux/claude process. */
 export type SessionIdResolution =
   | { kind: 'resolved'; sessionId: string }
   | { kind: 'ambiguous'; candidates: string[] }
@@ -13,7 +13,7 @@ export type SessionIdResolution =
 const CLOCK_TICKS_PER_SECOND = 100 // Linux USER_HZ; 100 on virtually all modern kernels/architectures.
 
 /**
- * Validates the plugin-provided marker file's contents (§4.1). `sessionId`
+ * Validates the plugin-provided marker file's contents. `sessionId`
  * is restricted to a safe filename-like character set: it is later
  * interpolated into a filesystem path (`jsonlPath`) and used as a Discord
  * thread title, so a value containing `/` or other path-manipulation
@@ -31,7 +31,7 @@ const sessionMarkerSchema = z.object({
 
 /**
  * Maps a host-side CLAUDE_CONFIG_DIR path to its container-side path using
- * `config.configDirs`/`config.claude.defaultConfigDir` (§6). Throws if
+ * `config.configDirs`/`config.claude.defaultConfigDir`. Throws if
  * `hostConfigDirectory` matches neither.
  */
 export function resolveContainerConfigDirectory(
@@ -80,7 +80,7 @@ async function readdirIfExists(directory: string): Promise<string[]> {
 
 /**
  * Resolves the Claude Code sessionId for `pid` running in `cwd` under
- * `containerConfigDirectory` (§4 step 4). Prefers the plugin-provided marker file
+ * `containerConfigDirectory`. Prefers the plugin-provided marker file
  * when present, falling back to a JSONL-creation-time heuristic otherwise —
  * see the implementation below for the exact resolution order; this
  * comment intentionally doesn't restate it step-by-step to avoid drifting
