@@ -60,11 +60,10 @@ export function resolveContainerConfigDirectory(
  * replaced with `-` (e.g. `/mnt/ssd/repos/github.com/foo` becomes
  * `-mnt-ssd-repos-github-com-foo`).
  *
- * This is the single source of truth for this conversion. `orchestrator.ts`
- * must import this function rather than reimplementing it — a duplicate
- * definition that only replaced `/` (Issue #16) caused sessionId resolution
- * to always fail for cwds containing a dot, such as this repository's own
- * checkout path.
+ * This is the single source of truth for this conversion, replacing a
+ * duplicate definition formerly in `orchestrator.ts` that only replaced `/`
+ * (Issue #16) and caused sessionId resolution to always fail for cwds
+ * containing a dot, such as this repository's own checkout path.
  */
 export function slugifyProjectCwd(cwd: string): string {
   return cwd.replaceAll(/[./]/g, '-')
@@ -121,26 +120,37 @@ async function listAllJsonlFiles(
 }
 
 /**
- * Searches every directory under `projectsRoot` for a file literally named
- * `<sessionId>.jsonl`, returning its absolute path if found. Used when
- * `sessionId` is already known (from a marker file) but the cwd-derived
- * directory doesn't contain it — an exact filename match needs no
- * birthtime heuristic.
+ * Finds a file literally named `<sessionId>.jsonl`, returning its absolute
+ * path if found. Used when `sessionId` is already known (from a marker
+ * file) — an exact filename match needs no birthtime heuristic.
+ *
+ * Checks `cwdDirectory` first as a cheap fast path (the marker's session
+ * usually still lives in the process's current project directory), then
+ * falls back to scanning every directory under `projectsRoot` in parallel.
  */
 async function findJsonlBySessionId(
   projectsRoot: string,
-  sessionId: string
+  sessionId: string,
+  cwdDirectory: string
 ): Promise<string | undefined> {
-  const projectDirectoryNames = await readdirIfExists(projectsRoot)
   const targetFile = `${sessionId}.jsonl`
-  for (const directoryName of projectDirectoryNames) {
-    const directory = path.join(projectsRoot, directoryName)
-    const files = await readdirIfExists(directory)
-    if (files.includes(targetFile)) {
-      return path.join(directory, targetFile)
-    }
+
+  const cwdFiles = await readdirIfExists(cwdDirectory)
+  if (cwdFiles.includes(targetFile)) {
+    return path.join(cwdDirectory, targetFile)
   }
-  return undefined
+
+  const projectDirectoryNames = await readdirIfExists(projectsRoot)
+  const matches = await Promise.all(
+    projectDirectoryNames.map(async (directoryName) => {
+      const directory = path.join(projectsRoot, directoryName)
+      const files = await readdirIfExists(directory)
+      return files.includes(targetFile)
+        ? path.join(directory, targetFile)
+        : undefined
+    })
+  )
+  return matches.find((match) => match !== undefined)
 }
 
 /** Computes the wall-clock time (epoch ms) at which process `pid` started. */
@@ -211,7 +221,8 @@ async function resolveByBirthtime(
  *    apply the birthtime heuristic within that directory.
  * 3. If the cwd-derived directory has no `.jsonl` files at all (e.g. cwd
  *    drifted from the session's real start-time cwd, such as a worktree
- *    switch), widen the search to every directory under `projects/` and
+ *    switch), widen the search to every directory under `projects/`. If
+ *    exactly one match is found, resolve to it directly; if more than one,
  *    apply the same birthtime heuristic across all of them combined.
  * 4. If nothing is found anywhere, return `unresolved`.
  */
@@ -223,6 +234,7 @@ export async function resolveSessionId(
   ambiguityThresholdMs: number
 ): Promise<SessionIdResolution> {
   const projectsRoot = path.join(containerConfigDirectory, 'projects')
+  const projectDirectory = path.join(projectsRoot, slugifyProjectCwd(cwd))
 
   const markerPath = path.join(
     containerConfigDirectory,
@@ -232,12 +244,15 @@ export async function resolveSessionId(
   const markerContent = await readFileIfExists(markerPath)
   if (markerContent !== undefined) {
     const marker = sessionMarkerSchema.parse(JSON.parse(markerContent))
-    const jsonlPath = await findJsonlBySessionId(projectsRoot, marker.sessionId)
+    const jsonlPath = await findJsonlBySessionId(
+      projectsRoot,
+      marker.sessionId,
+      projectDirectory
+    )
     if (jsonlPath === undefined) return { kind: 'unresolved' }
     return { kind: 'resolved', sessionId: marker.sessionId, jsonlPath }
   }
 
-  const projectDirectory = path.join(projectsRoot, slugifyProjectCwd(cwd))
   const cwdFiles = await readdirIfExists(projectDirectory)
   const cwdEntries: JsonlFileEntry[] = cwdFiles
     .filter((file) => file.endsWith('.jsonl'))
