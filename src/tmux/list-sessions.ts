@@ -32,12 +32,19 @@ const defaultExec: ExecFunction = async (socketPath, arguments_) => {
 }
 
 /**
- * Field delimiter for the `tmux list-panes -F` format string below. A tab
- * cannot appear in a tmux session name (tmux itself rejects it), unlike a
- * plain space — `tmux rename-session "my project"` is valid and would
- * otherwise silently misalign the 3-way destructure in `listAllTmuxPanes`.
+ * Field delimiter for the `tmux list-panes -F` format string below. A plain
+ * space is unsafe — `tmux rename-session "my project"` is valid and would
+ * silently misalign the 3-way destructure in `listAllTmuxPanes`. A tab was
+ * used originally on the same reasoning (tmux rejects tabs in session
+ * names), but real-environment testing (Issue #13) found that some tmux
+ * client builds (observed with Alpine's tmux 3.6b talking to a tmux 3.6
+ * server) replace literal control characters embedded in a `-F` format
+ * string — including tab — with `_` in their output, corrupting every line.
+ * Colon keeps the same "can never appear in a session name" guarantee
+ * without being a control character: tmux itself rewrites literal colons in
+ * session names to underscores at creation time.
  */
-const FIELD_DELIMITER = '\t'
+const FIELD_DELIMITER = ':'
 
 /**
  * Lists every pane across every tmux session on the server at `socketPath`
