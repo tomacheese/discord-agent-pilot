@@ -1,4 +1,6 @@
 guildId: '123456789012345678'
+# 省略した場合は環境変数 DISCORD_TOKEN が使われる。設定するとこちらが優先される。
+# discordToken: 'YOUR_BOT_TOKEN'
 parentChannel:
   type: forum
   id: '234567890123456789'
