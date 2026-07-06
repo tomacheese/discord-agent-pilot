@@ -164,6 +164,80 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
+  it('does not repost an earlier line in a retried multi-line batch after a later line fails', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    let callCount = 0
+    const send = vi.fn().mockImplementation(() => {
+      callCount += 1
+      // The 2nd call (posting the 2nd line's content) fails on the first
+      // attempt, but succeeds afterwards. The 1st call (1st line) always
+      // succeeds.
+      if (callCount === 2) return Promise.reject(new Error('discord API error'))
+      return Promise.resolve(undefined)
+    })
+    const thread: DiscordThread = { send, sendTyping: vi.fn() }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: async () => thread,
+      pollIntervalMs: 50,
+    }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line1 =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'first line' }] },
+      }) + '\n'
+    const line2 =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'second line' }] },
+      }) + '\n'
+    const batch = line1 + line2
+    writeFileSync(jsonlPath, batch)
+
+    // Wait for both lines to have been attempted once (1st succeeds, 2nd
+    // rejects), which fails the whole onLines batch and leaves jsonl_offset
+    // stuck at the offset after line1 (since that UPDATE already committed
+    // before line2 threw).
+    await waitFor(() => callCount >= 2)
+    await waitFor(() => {
+      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+        jsonl_offset: number
+      }
+      return row.jsonl_offset === Buffer.byteLength(line1, 'utf8')
+    })
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send).toHaveBeenNthCalledWith(1, { content: 'first line' })
+
+    // A no-op append still triggers a change event on most platforms and
+    // forces the tailer to retry the same unconfirmed batch (both lines,
+    // since the tailer's in-memory offset never advanced past the batch
+    // start).
+    writeFileSync(jsonlPath, batch)
+    await waitFor(() => {
+      const row = db.prepare('SELECT jsonl_offset FROM sessions WHERE id = ?').get('session-1') as {
+        jsonl_offset: number
+      }
+      return row.jsonl_offset === Buffer.byteLength(batch, 'utf8')
+    }, 5000)
+
+    // The 1st line must not have been reposted: only the original call to
+    // send its content, plus exactly one more call (the retried 2nd line).
+    expect(send).toHaveBeenCalledTimes(3)
+    expect(send).toHaveBeenNthCalledWith(3, { content: 'second line' })
+    const firstLineCalls = send.mock.calls.filter(
+      (call) => (call[0] as { content?: string }).content === 'first line'
+    )
+    expect(firstLineCalls).toHaveLength(1)
+
+    errorSpy.mockRestore()
+    db.close()
+  })
+
   it('posts a user text entry when input_queue is empty (transitional behavior)', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')

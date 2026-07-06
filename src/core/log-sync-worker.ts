@@ -58,6 +58,14 @@ function updateJsonlOffset(
   )
 }
 
+/** Reads the currently persisted `jsonl_offset` for `sessionId` from the DB. */
+function getJsonlOffset(db: Database.Database, sessionId: string): number {
+  const row = db
+    .prepare('SELECT jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?')
+    .get(sessionId) as { jsonlOffset: number } | undefined
+  return row?.jsonlOffset ?? 0
+}
+
 function findUnconsumedSentInput(
   db: Database.Database,
   sessionId: string
@@ -114,6 +122,9 @@ async function postItem(thread: DiscordThread, item: PostItem): Promise<void> {
         content: item.header,
         files: [{ name: item.filename, data: item.content }],
       })
+      // Explicit return for consistency with the other switch cases below.
+      // eslint-disable-next-line no-useless-return
+      return
     }
   }
 }
@@ -195,6 +206,12 @@ function reconcileTailers(
         const thread = await dependencies.getThread(session.threadId)
         if (!thread) return
         for (const line of lines) {
+          // Always re-read the persisted offset: a retried batch may have
+          // already had its earlier lines posted and committed before a
+          // later line failed, and a prior line in this same loop iteration
+          // may itself have just advanced it further.
+          const currentOffset = getJsonlOffset(dependencies.db, session.id)
+          if (line.offsetAfter <= currentOffset) continue
           await processLine(
             dependencies,
             session,
