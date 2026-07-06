@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -44,18 +44,44 @@ describe('resolveContainerConfigDirectory', () => {
 })
 
 /**
- * Builds a minimal fake `/proc/<pid>/stat` line whose 22nd field (process
- * start time in clock ticks since boot) is `0` — combined with a
- * `${procRoot}/stat` `btime` line set to "now" (written by each test above),
- * this places the fake process's start time at "now" for birthtime-diff
- * comparisons.
+ * Builds a fake `/proc/<pid>/stat` line whose 22nd field (process start time
+ * in clock ticks since boot, index 19 counting from the field right after
+ * `comm`'s closing `)` — see `readProcessStartTicks` in `src/tmux/proc.ts`,
+ * which lands this at index 21 of this raw field array) is `startTicks`.
  */
-function buildFakeStat(): string {
+function buildFakeStat(startTicks: number): string {
   const fields = Array.from({ length: 52 }, () => '0')
   fields[0] = '100'
   fields[1] = '(node)'
   fields[2] = 'S'
+  fields[21] = String(startTicks)
   return fields.join(' ')
+}
+
+/**
+ * Writes a fake `${procRoot}/stat` + `${procRoot}/<pid>/stat` pair that
+ * reconstructs `processStartMs` (an arbitrary real epoch-ms timestamp, e.g.
+ * a file's real `birthtimeMs`) as process `pid`'s start time, accurate to
+ * within one clock tick (10ms at 100 ticks/sec). Real file birthtimes can't
+ * be backdated from userspace, so tests instead fake the *process* start
+ * time to line up with a real, already-observed file birthtime.
+ */
+async function writeFakeProcessStart(
+  procRoot: string,
+  pid: string,
+  processStartMs: number
+): Promise<void> {
+  await mkdir(path.join(procRoot, pid), { recursive: true })
+  const bootEpochSeconds = Math.floor(processStartMs / 1000)
+  const ticks = Math.round((processStartMs - bootEpochSeconds * 1000) / 10)
+  // readBootTimeEpochMs (src/tmux/proc.ts) reads `${procRoot}/stat`'s
+  // `btime` line, not a `${procRoot}/uptime` file — this must match that
+  // contract or resolveSessionId's ENOENT on this file will fail the test.
+  await writeFile(
+    path.join(procRoot, 'stat'),
+    `cpu  0 0 0 0\nbtime ${bootEpochSeconds}\n`
+  )
+  await writeFile(path.join(procRoot, pid, 'stat'), buildFakeStat(ticks))
 }
 
 describe('resolveSessionId', () => {
@@ -231,33 +257,23 @@ describe('resolveSessionId', () => {
       'session-far.jsonl'
     )
     await mkdir(path.dirname(closePath), { recursive: true })
-    await writeFile(closePath, '')
+
+    // Birthtime can't be backdated from userspace, so create "far" first,
+    // wait a real interval, then create "close" — this produces a genuine,
+    // non-flaky birthtime gap between the two files.
     await writeFile(farPath, '')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await writeFile(closePath, '')
 
-    // Backdate the "far" file's mtime far away from "now" (process start,
-    // per the fake /proc root below, is close to "now") so the birthtime
-    // heuristic clearly prefers "close" over "far" beyond the threshold.
-    const farOld = new Date(Date.now() - 10 * 60 * 1000)
-    const { utimes } = await import('node:fs/promises')
-    await utimes(farPath, farOld, farOld)
-
-    await mkdir(procRoot, { recursive: true })
-    await mkdir(path.join(procRoot, '100'), { recursive: true })
-    // readBootTimeEpochMs (src/tmux/proc.ts) reads `${procRoot}/stat`'s
-    // `btime` line, not a `${procRoot}/uptime` file — this must match that
-    // contract or resolveSessionId's ENOENT on this file will fail the test.
-    await writeFile(
-      path.join(procRoot, 'stat'),
-      `cpu  0 0 0 0\nbtime ${Math.floor(Date.now() / 1000)}\n`
-    )
-    await writeFile(path.join(procRoot, '100', 'stat'), buildFakeStat())
+    const closeStats = await stat(closePath)
+    await writeFakeProcessStart(procRoot, '100', closeStats.birthtimeMs)
 
     const result = await resolveSessionId(
       procRoot,
       containerConfigDirectory,
       '100',
       cwd,
-      3000
+      10
     )
 
     expect(result).toEqual({
@@ -271,23 +287,18 @@ describe('resolveSessionId', () => {
     const pathA = await writeJsonlFile('-mnt-ssd-repos-a', 'session-a')
     const pathB = await writeJsonlFile('-mnt-ssd-repos-b', 'session-b')
 
-    await mkdir(procRoot, { recursive: true })
-    await mkdir(path.join(procRoot, '100'), { recursive: true })
-    // readBootTimeEpochMs (src/tmux/proc.ts) reads `${procRoot}/stat`'s
-    // `btime` line, not a `${procRoot}/uptime` file — this must match that
-    // contract or resolveSessionId's ENOENT on this file will fail the test.
-    await writeFile(
-      path.join(procRoot, 'stat'),
-      `cpu  0 0 0 0\nbtime ${Math.floor(Date.now() / 1000)}\n`
-    )
-    await writeFile(path.join(procRoot, '100', 'stat'), buildFakeStat())
+    // Both files are created back-to-back with no artificial delay, so
+    // their real birthtimes naturally land within a few ms of each other —
+    // well inside the generous threshold below.
+    const statsA = await stat(pathA)
+    await writeFakeProcessStart(procRoot, '100', statsA.birthtimeMs)
 
     const result = await resolveSessionId(
       procRoot,
       containerConfigDirectory,
       '100',
       '/mnt/ssd/repos/example',
-      3000
+      1000
     )
 
     expect(result.kind).toBe('ambiguous')

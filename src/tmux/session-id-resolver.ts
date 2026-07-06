@@ -171,7 +171,7 @@ async function resolveByBirthtime(
       return {
         sessionId: stripJsonlExtension(entry.file),
         jsonlPath,
-        diff: Math.abs(stats.mtimeMs - processStartMs),
+        diff: Math.abs(stats.birthtimeMs - processStartMs),
       }
     })
   )
