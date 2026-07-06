@@ -1,0 +1,26 @@
+# Node.js でビルド・テストを実行する。バージョンは .node-version に記載されているものを利用する
+
+name: Node CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  node-ci:
+    name: Node CI
+    uses: book000/templates/.github/workflows/reusable-nodejs-ci-pnpm.yml@master
+    with:
+      # fauxcord is spawned via a literal `node_modules/fauxcord/...` path in
+      # src/integration.test.ts, not a static import/require, so depcheck's
+      # static analysis reports it as an unused devDependency (false
+      # positive). depcheck only honors a config file (.depcheckrc.yml) via
+      # an explicit --config flag, which this reusable job's plain
+      # `npx depcheck` invocation does not pass, so disable the job instead.
+      disabled-jobs: depcheck

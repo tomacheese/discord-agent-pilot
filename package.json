@@ -1,0 +1,41 @@
+{
+  "name": "discord-agent-pilot",
+  "version": "0.0.0",
+  "description": "A Discord bot that monitors and controls Claude Code running in tmux via Discord threads",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint:tsc": "tsc --noEmit",
+    "lint:eslint": "eslint src/",
+    "lint:prettier": "prettier --check src/",
+    "lint": "run-s lint:*",
+    "fix:eslint": "eslint src/ --fix",
+    "fix:prettier": "prettier --write src/",
+    "fix": "run-s fix:*"
+  },
+  "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8",
+  "devDependencies": {
+    "@book000/eslint-config": "1.15.37",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.13.2",
+    "@vitest/coverage-v8": "4.1.9",
+    "eslint": "10.6.0",
+    "fauxcord": "github:tomacheese/fauxcord#fd50fbbc0aca42fbf5b7be53417fb33114c6ffac",
+    "npm-run-all2": "9.0.2",
+    "prettier": "3.9.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1",
+    "discord.js": "14.26.4",
+    "tsx": "4.23.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  }
+}
