@@ -1,13 +1,14 @@
 import { ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js'
 import type { Config } from '../config/schema'
 import { isAllowedUser } from '../discord/permissions'
+import type { SessionIdCandidate } from '../tmux/session-id-resolver'
 
 /** How long to wait for a human to resolve an ambiguous sessionId prompt before giving up. */
 const AMBIGUITY_PROMPT_TIMEOUT_MS = 5 * 60 * 1000
 
 /** Tracks tmux-detected sessions still waiting on ambiguity resolution. */
 export class AmbiguityTracker {
-  private readonly pending = new Map<string, string[]>()
+  private readonly pending = new Map<string, SessionIdCandidate[]>()
 
   /** Builds the internal map key identifying a tmux session/pane pair. */
   private key(tmuxSession: string, panePid: string): string {
@@ -18,7 +19,7 @@ export class AmbiguityTracker {
   markPending(
     tmuxSession: string,
     panePid: string,
-    candidates: string[]
+    candidates: SessionIdCandidate[]
   ): void {
     this.pending.set(this.key(tmuxSession, panePid), candidates)
   }
@@ -70,22 +71,28 @@ export interface PromptChannel {
 }
 
 /**
- * Posts a Select menu to `channel` listing `candidates` as sessionId
- * options, and resolves with the sessionId the first *allowed* user
- * selects. Selections from non-allowed users are rejected with
- * an ephemeral reply and do not resolve the promise. If no allowed user
- * selects a candidate within `AMBIGUITY_PROMPT_TIMEOUT_MS`, resolves with
- * `undefined` instead of hanging indefinitely.
+ * Posts a Select menu to `channel` listing `candidates` by sessionId, and
+ * resolves with the full candidate (sessionId + its already-verified
+ * jsonlPath) the first *allowed* user selects. Selections from
+ * non-allowed users are rejected with an ephemeral reply and do not
+ * resolve the promise. If no allowed user selects a candidate within
+ * `AMBIGUITY_PROMPT_TIMEOUT_MS`, resolves with `undefined` instead of
+ * hanging indefinitely.
  */
 export async function promptSessionIdSelection(
   channel: PromptChannel,
-  candidates: string[],
+  candidates: SessionIdCandidate[],
   config: Config
-): Promise<string | undefined> {
+): Promise<SessionIdCandidate | undefined> {
   const menu = new StringSelectMenuBuilder()
     .setCustomId('session-id-selection')
     .setPlaceholder('Select the matching Claude Code session')
-    .addOptions(candidates.map((id) => ({ label: id, value: id })))
+    .addOptions(
+      candidates.map((candidate) => ({
+        label: candidate.sessionId,
+        value: candidate.sessionId,
+      }))
+    )
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     menu
   )
@@ -124,7 +131,10 @@ export async function promptSessionIdSelection(
       // (and dispatching to allowed/disallowed-user checks against) further
       // interactions on this message until the timeout elapses.
       collector.stop('user')
-      resolve(interaction.values[0])
+      const selected = candidates.find(
+        (candidate) => candidate.sessionId === interaction.values[0]
+      )
+      resolve(selected)
     })
     collector.on('end', (_collected, reason) => {
       if (hasSettled || reason !== 'time') return
