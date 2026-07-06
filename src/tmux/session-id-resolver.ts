@@ -18,6 +18,11 @@ export type SessionIdResolution =
 
 const CLOCK_TICKS_PER_SECOND = 100 // Linux USER_HZ; 100 on virtually all modern kernels/architectures.
 
+// Discord's select-menu component rejects more than 25 options, and
+// `promptSessionIdSelection` (src/core/ambiguity.ts) renders one option per
+// candidate — so an "ambiguous" result must never carry more than this many.
+const MAX_AMBIGUOUS_CANDIDATES = 25
+
 /**
  * Validates the plugin-provided marker file's contents. `sessionId`
  * is restricted to a safe filename-like character set: it is later
@@ -168,6 +173,12 @@ async function computeProcessStartMs(
  * among `entries` (which must have at least 2 elements — callers handle
  * the 0/1-length cases themselves), or reports ambiguity if the top two
  * are within `ambiguityThresholdMs` of each other.
+ *
+ * The ambiguous set only includes entries within the threshold of the best
+ * match (not every entry in `entries`), and is capped at
+ * `MAX_AMBIGUOUS_CANDIDATES`: a global search can turn up far more than 25
+ * `.jsonl` files, and `promptSessionIdSelection` renders one Discord
+ * select-menu option per candidate.
  */
 async function resolveByBirthtime(
   entries: JsonlFileEntry[],
@@ -193,10 +204,13 @@ async function resolveByBirthtime(
   if (second.diff - best.diff < ambiguityThresholdMs) {
     return {
       kind: 'ambiguous',
-      candidates: scored.map((entry) => ({
-        sessionId: entry.sessionId,
-        jsonlPath: entry.jsonlPath,
-      })),
+      candidates: scored
+        .filter((entry) => entry.diff - best.diff < ambiguityThresholdMs)
+        .slice(0, MAX_AMBIGUOUS_CANDIDATES)
+        .map((entry) => ({
+          sessionId: entry.sessionId,
+          jsonlPath: entry.jsonlPath,
+        })),
     }
   }
   return {

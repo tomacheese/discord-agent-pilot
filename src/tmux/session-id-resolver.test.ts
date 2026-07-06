@@ -312,4 +312,75 @@ describe('resolveSessionId', () => {
       { sessionId: 'session-b', jsonlPath: pathB },
     ])
   })
+
+  it('excludes an entry outside the ambiguity threshold of the best match, even when it is the second-closest', async () => {
+    const cwd = '/mnt/ssd/repos/example'
+    const directoryName = '-mnt-ssd-repos-example'
+    const farPath = path.join(
+      containerConfigDirectory,
+      'projects',
+      directoryName,
+      'session-far.jsonl'
+    )
+    await mkdir(path.dirname(farPath), { recursive: true })
+
+    // "far" is created well before the other two, so its birthtime sits
+    // outside the threshold even though it's numerically the "second"
+    // closest to the process start time once sorted.
+    await writeFile(farPath, '')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const pathA = await writeJsonlFile(directoryName, 'session-a')
+    const pathB = await writeJsonlFile(directoryName, 'session-b')
+
+    const statsA = await stat(pathA)
+    await writeFakeProcessStart(procRoot, '100', statsA.birthtimeMs)
+
+    const result = await resolveSessionId(
+      procRoot,
+      containerConfigDirectory,
+      '100',
+      cwd,
+      100
+    )
+
+    expect(result.kind).toBe('ambiguous')
+    if (result.kind !== 'ambiguous') throw new Error('expected ambiguous')
+    expect(
+      result.candidates.toSorted((a, b) =>
+        a.sessionId.localeCompare(b.sessionId)
+      )
+    ).toEqual([
+      { sessionId: 'session-a', jsonlPath: pathA },
+      { sessionId: 'session-b', jsonlPath: pathB },
+    ])
+  })
+
+  it('caps ambiguous candidates at 25 to fit the Discord select menu even when more entries are within the threshold', async () => {
+    const directoryName = '-mnt-ssd-repos-many'
+    const paths = await Promise.all(
+      Array.from({ length: 30 }, async (_, index) =>
+        writeJsonlFile(
+          directoryName,
+          `session-${String(index).padStart(2, '0')}`
+        )
+      )
+    )
+
+    const firstStats = await stat(paths[0])
+    await writeFakeProcessStart(procRoot, '100', firstStats.birthtimeMs)
+
+    const result = await resolveSessionId(
+      procRoot,
+      containerConfigDirectory,
+      '100',
+      '/mnt/ssd/repos/example',
+      // Generous threshold: all 30 files were created back-to-back, so
+      // their real birthtimes land within a few ms of each other.
+      10_000
+    )
+
+    expect(result.kind).toBe('ambiguous')
+    if (result.kind !== 'ambiguous') throw new Error('expected ambiguous')
+    expect(result.candidates).toHaveLength(25)
+  })
 })
