@@ -113,6 +113,32 @@ describe('runDetectionCycle', () => {
     expect(findSessionById(dependencies.db, 'session-1')).toBeDefined()
   })
 
+  // Regression test for a bug found during real-environment integration
+  // testing (Issue #13): repository checkouts nested under a directory
+  // containing a dot (e.g. `github.com`, a directory layout this very
+  // repository itself uses) are extremely common. Real Claude Code slugifies
+  // a session's cwd into its `~/.claude/projects/<slug>` directory name by
+  // replacing every `/` *and* every `.` with `-` (confirmed by inspecting
+  // actual `~/.claude/projects/` entries), but `registerSession` only
+  // replaced `/`, leaving `.` untouched and producing a `jsonlPath` that
+  // never matches the real JSONL file on disk.
+  it('replaces dots as well as slashes when building jsonlPath from cwd', async () => {
+    vi.mocked(readProcessCwd).mockResolvedValue(
+      '/mnt/ssd/repos/github.com/tomacheese/discord-agent-pilot'
+    )
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+    })
+    const { dependencies } = makeDependencies()
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.jsonlPath).toBe(
+      '/host/claude-config/projects/-mnt-ssd-repos-github-com-tomacheese-discord-agent-pilot/session-1.jsonl'
+    )
+  })
+
   it('does nothing when no claude process is found in the pane', async () => {
     vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
     const { dependencies, createSessionThread } = makeDependencies()
