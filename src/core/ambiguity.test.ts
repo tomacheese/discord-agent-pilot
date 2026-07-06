@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Config } from '../config/schema'
+import type { SessionIdCandidate } from '../tmux/session-id-resolver'
 import {
   AmbiguityTracker,
   promptSessionIdSelection,
@@ -25,12 +26,21 @@ function makeConfig(allowedUserIds: string[]): Config {
   }
 }
 
+const candidateA: SessionIdCandidate = {
+  sessionId: 'session-a',
+  jsonlPath: '/host/claude-config/projects/dir-a/session-a.jsonl',
+}
+const candidateB: SessionIdCandidate = {
+  sessionId: 'session-b',
+  jsonlPath: '/host/claude-config/projects/dir-b/session-b.jsonl',
+}
+
 describe('AmbiguityTracker', () => {
   it('tracks pending state per tmux session + pane pid', () => {
     const tracker = new AmbiguityTracker()
     expect(tracker.isPending('tmux-1', '100')).toBe(false)
 
-    tracker.markPending('tmux-1', '100', ['session-a', 'session-b'])
+    tracker.markPending('tmux-1', '100', [candidateA, candidateB])
     expect(tracker.isPending('tmux-1', '100')).toBe(true)
     expect(tracker.isPending('tmux-1', '200')).toBe(false)
 
@@ -86,11 +96,11 @@ function makeFakeChannel() {
 }
 
 describe('promptSessionIdSelection', () => {
-  it('resolves with the sessionId selected by an allowed user', async () => {
+  it('resolves with the candidate selected by an allowed user', async () => {
     const { channel, collector, emitCollect } = makeFakeChannel()
     const resultPromise = promptSessionIdSelection(
       channel,
-      ['session-a', 'session-b'],
+      [candidateA, candidateB],
       makeConfig(['user-1'])
     )
 
@@ -104,7 +114,7 @@ describe('promptSessionIdSelection', () => {
       reply: vi.fn(),
     })
 
-    await expect(resultPromise).resolves.toBe('session-b')
+    await expect(resultPromise).resolves.toEqual(candidateB)
     // The collector must be stopped once a valid selection is made, rather
     // than left running until AMBIGUITY_PROMPT_TIMEOUT_MS elapses.
     expect(collector.stop).toHaveBeenCalled()
@@ -114,7 +124,7 @@ describe('promptSessionIdSelection', () => {
     const { channel, emitCollect } = makeFakeChannel()
     const resultPromise = promptSessionIdSelection(
       channel,
-      ['session-a'],
+      [candidateA],
       makeConfig(['user-1'])
     )
     const reply = vi.fn().mockResolvedValue(undefined)
@@ -136,14 +146,14 @@ describe('promptSessionIdSelection', () => {
       values: ['session-a'],
       reply: vi.fn(),
     })
-    await expect(resultPromise).resolves.toBe('session-a')
+    await expect(resultPromise).resolves.toEqual(candidateA)
   })
 
   it('resolves to undefined when the collector times out without a selection', async () => {
     const { channel, emitEnd } = makeFakeChannel()
     const resultPromise = promptSessionIdSelection(
       channel,
-      ['session-a'],
+      [candidateA],
       makeConfig(['user-1'])
     )
 

@@ -80,20 +80,6 @@ function isWithinWorkspaceRoots(
 }
 
 /**
- * Slugifies `cwd` into the directory name real Claude Code uses under
- * `~/.claude/projects/` for that working directory. Confirmed by inspecting
- * actual `~/.claude/projects/` entries: both `/` and `.` are replaced with
- * `-` (e.g. `/mnt/ssd/repos/github.com/foo` becomes
- * `-mnt-ssd-repos-github-com-foo`). Replacing only `/` (a bug found during
- * real-environment integration testing, Issue #13) leaves dots in the
- * result, which never matches the real on-disk directory whenever `cwd`
- * contains one — a case this very repository's own checkout path hits.
- */
-function slugifyProjectCwd(cwd: string): string {
-  return cwd.replaceAll(/[./]/g, '-')
-}
-
-/**
  * Registers `sessionId` (creating its Discord thread) unless it is already
  * registered. Guards against concurrent registration of the
  * same sessionId from a parallel `processPane` call via
@@ -107,7 +93,8 @@ async function registerSession(
   panePid: string,
   claudePid: string,
   cwd: string,
-  containerConfigDirectory: string
+  containerConfigDirectory: string,
+  jsonlPath: string
 ): Promise<void> {
   if (findSessionById(dependencies.db, sessionId)) return
   if (dependencies.registeringSessionIds.has(sessionId)) return
@@ -125,7 +112,7 @@ async function registerSession(
       tmuxPanePid: panePid,
       cwd,
       configDir: containerConfigDirectory,
-      jsonlPath: `${containerConfigDirectory}/projects/${slugifyProjectCwd(cwd)}/${sessionId}.jsonl`,
+      jsonlPath,
       jsonlOffset: 0,
       status: 'discovered',
       createdAt: now,
@@ -200,22 +187,23 @@ async function processPane(
       panePid,
       resolution.candidates
     )
-    const sessionId = await promptSessionIdSelection(
+    const selected = await promptSessionIdSelection(
       dependencies.promptChannel,
       resolution.candidates,
       config
     )
     dependencies.ambiguityTracker.resolve(tmuxSession, panePid)
-    if (sessionId === undefined) return
+    if (!selected) return
     await registerSession(
       dependencies,
       config,
-      sessionId,
+      selected.sessionId,
       tmuxSession,
       panePid,
       claudePid,
       cwd,
-      containerConfigDirectory
+      containerConfigDirectory,
+      selected.jsonlPath
     )
     return
   }
@@ -228,7 +216,8 @@ async function processPane(
     panePid,
     claudePid,
     cwd,
-    containerConfigDirectory
+    containerConfigDirectory,
+    resolution.jsonlPath
   )
 }
 

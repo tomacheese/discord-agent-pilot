@@ -104,6 +104,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
 
@@ -113,29 +114,22 @@ describe('runDetectionCycle', () => {
     expect(findSessionById(dependencies.db, 'session-1')).toBeDefined()
   })
 
-  // Regression test for a bug found during real-environment integration
-  // testing (Issue #13): repository checkouts nested under a directory
-  // containing a dot (e.g. `github.com`, a directory layout this very
-  // repository itself uses) are extremely common. Real Claude Code slugifies
-  // a session's cwd into its `~/.claude/projects/<slug>` directory name by
-  // replacing every `/` *and* every `.` with `-` (confirmed by inspecting
-  // actual `~/.claude/projects/` entries), but `registerSession` only
-  // replaced `/`, leaving `.` untouched and producing a `jsonlPath` that
-  // never matches the real JSONL file on disk.
-  it('replaces dots as well as slashes when building jsonlPath from cwd', async () => {
-    vi.mocked(readProcessCwd).mockResolvedValue(
-      '/mnt/ssd/repos/github.com/tomacheese/discord-agent-pilot'
-    )
+  it('uses the jsonlPath returned by resolveSessionId as-is, without reconstructing it from cwd', async () => {
+    // Regression test for Issue #16: orchestrator.ts must not rebuild
+    // jsonlPath from cwd itself (that reconstruction can drift from the
+    // real file when cwd changes after session start, e.g. a worktree
+    // switch) — it must trust whatever path resolveSessionId verified.
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/some-other-dir/session-1.jsonl',
     })
     const { dependencies } = makeDependencies()
 
     await runDetectionCycle(dependencies, makeConfig())
 
     expect(findSessionById(dependencies.db, 'session-1')?.jsonlPath).toBe(
-      '/host/claude-config/projects/-mnt-ssd-repos-github-com-tomacheese-discord-agent-pilot/session-1.jsonl'
+      '/host/claude-config/projects/some-other-dir/session-1.jsonl'
     )
   })
 
@@ -152,6 +146,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
 
@@ -175,6 +170,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
 
@@ -187,6 +183,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
     dependencies.resolvedPanes.set('tmux-1:100', '300')
@@ -203,6 +200,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-2',
+      jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
     // A prior session ('session-1', pid 300) was registered in this pane;
@@ -218,10 +216,19 @@ describe('runDetectionCycle', () => {
     expect(findSessionById(dependencies.db, 'session-2')).toBeDefined()
   })
 
-  it('prompts for a selection when resolution is ambiguous, then registers the chosen sessionId', async () => {
+  it('prompts for a selection when resolution is ambiguous, then registers the chosen sessionId and its jsonlPath', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'ambiguous',
-      candidates: ['session-a', 'session-b'],
+      candidates: [
+        {
+          sessionId: 'session-a',
+          jsonlPath: '/host/claude-config/projects/x/session-a.jsonl',
+        },
+        {
+          sessionId: 'session-b',
+          jsonlPath: '/host/claude-config/projects/y/session-b.jsonl',
+        },
+      ],
     })
     const { dependencies, createSessionThread, promptSend } = makeDependencies()
     promptSend.mockResolvedValue({
@@ -242,13 +249,26 @@ describe('runDetectionCycle', () => {
     await runDetectionCycle(dependencies, makeConfig())
 
     expect(createSessionThread).toHaveBeenCalledWith('session-b')
-    expect(findSessionById(dependencies.db, 'session-b')).toBeDefined()
+    const row = findSessionById(dependencies.db, 'session-b')
+    expect(row).toBeDefined()
+    expect(row?.jsonlPath).toBe(
+      '/host/claude-config/projects/y/session-b.jsonl'
+    )
   })
 
   it('does not register a session when the ambiguity prompt times out', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'ambiguous',
-      candidates: ['session-a', 'session-b'],
+      candidates: [
+        {
+          sessionId: 'session-a',
+          jsonlPath: '/host/claude-config/projects/x/session-a.jsonl',
+        },
+        {
+          sessionId: 'session-b',
+          jsonlPath: '/host/claude-config/projects/y/session-b.jsonl',
+        },
+      ],
     })
     const { dependencies, createSessionThread, promptSend } = makeDependencies()
     promptSend.mockResolvedValue({
@@ -272,7 +292,16 @@ describe('runDetectionCycle', () => {
   it('logs a warning and skips resolution when ambiguous but promptChannel is unavailable (forum parent)', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'ambiguous',
-      candidates: ['session-a', 'session-b'],
+      candidates: [
+        {
+          sessionId: 'session-a',
+          jsonlPath: '/host/claude-config/projects/x/session-a.jsonl',
+        },
+        {
+          sessionId: 'session-b',
+          jsonlPath: '/host/claude-config/projects/y/session-b.jsonl',
+        },
+      ],
     })
     const { dependencies, createSessionThread } = makeDependencies()
     dependencies.promptChannel = undefined
@@ -324,6 +353,7 @@ describe('runDetectionCycle', () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
