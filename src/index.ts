@@ -3,11 +3,17 @@ import { loadConfig } from './config/load'
 import { openRegistryDb as openRegistryDatabase } from './registry/db'
 import { createDiscordClient } from './discord/client'
 import { createParentChannel } from './discord/parent-channel'
+import { toAttachmentData } from './discord/attachment'
 import { AmbiguityTracker } from './core/ambiguity'
 import {
   runDetectionCycle,
   type OrchestratorDependencies,
 } from './core/orchestrator'
+import {
+  runLogSyncCycle,
+  type LogSyncDependencies,
+  type SendInput,
+} from './core/log-sync-worker'
 import { resolveTmuxSocketPath } from './tmux/list-sessions'
 
 const configPath = process.env.CONFIG_PATH ?? './config.yaml'
@@ -47,6 +53,49 @@ async function main(): Promise<void> {
     resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
   }
+
+  const LOG_SYNC_POLL_INTERVAL_MS = 1000
+
+  const logSyncDependencies: LogSyncDependencies = {
+    db: database,
+    getThread: async (threadId) => {
+      // eslint-disable-next-line unicorn/prefer-await
+      const channel = await client.channels.fetch(threadId).catch(() => null)
+      if (!channel || !('send' in channel) || !('sendTyping' in channel)) {
+        return undefined
+      }
+      return {
+        send: (input: SendInput) =>
+          channel.send({
+            content: input.content,
+            files: input.files?.map((file) => ({
+              attachment: toAttachmentData(file.data),
+              name: file.name,
+            })),
+            // Synced content originates from the JSONL log (assistant text,
+            // tool output) rather than the operator, so mentions embedded in
+            // it must never trigger real Discord notifications.
+            allowedMentions: { parse: [] },
+          }),
+        sendTyping: () => channel.sendTyping(),
+      }
+    },
+    pollIntervalMs: LOG_SYNC_POLL_INTERVAL_MS,
+  }
+
+  let isLogSyncCycleInProgress = false
+  setInterval(() => {
+    if (isLogSyncCycleInProgress) return
+    isLogSyncCycleInProgress = true
+    // eslint-disable-next-line no-void
+    void runLogSyncCycle(logSyncDependencies)
+      .catch((error: unknown) => {
+        console.error('Log sync cycle failed:', error)
+      })
+      .finally(() => {
+        isLogSyncCycleInProgress = false
+      })
+  }, LOG_SYNC_POLL_INTERVAL_MS)
 
   // Guards against overlapping cycles: if a cycle is still running when the
   // next tick fires (e.g. a slow Discord API call), the next tick is

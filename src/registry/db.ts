@@ -48,6 +48,10 @@ function applyMigrations(db: Database.Database): void {
 export function openRegistryDb(dbPath: string): Database.Database {
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
+  // SQLite disables foreign key enforcement by default even when a table
+  // declares a REFERENCES constraint; without this, orphan
+  // input_queue.session_id values would be silently allowed.
+  db.pragma('foreign_keys = ON')
   applyMigrations(db)
   return db
 }
