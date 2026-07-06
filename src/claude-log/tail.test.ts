@@ -4,6 +4,20 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createJsonlTailer, type TailedLine } from './tail'
 
+/** Waits until `isConditionMet()` is true or `timeoutMs` elapses, polling every 20ms. */
+async function waitFor(
+  isConditionMet: () => boolean,
+  timeoutMs = 3000
+): Promise<void> {
+  const start = Date.now()
+  while (!isConditionMet()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('waitFor timed out')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
 describe('createJsonlTailer', () => {
   let temporaryDirectory: string
   let filePath: string
@@ -17,22 +31,12 @@ describe('createJsonlTailer', () => {
     rmSync(temporaryDirectory, { recursive: true, force: true })
   })
 
-  /** Waits until `predicate()` is true or `timeoutMs` elapses, polling every 20ms. */
-  async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
-    const start = Date.now()
-    while (!predicate()) {
-      if (Date.now() - start > timeoutMs) {
-        throw new Error('waitFor timed out')
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20))
-    }
-  }
-
   it('reports complete lines appended after startOffset, with byte offsets', async () => {
     writeFileSync(filePath, '')
     const received: TailedLine[][] = []
-    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+    const tailer = createJsonlTailer(filePath, 0, (lines) => {
       received.push(lines)
+      return Promise.resolve()
     })
     tailer.start()
     appendFileSync(filePath, '{"a":1}\n{"a":2}\n')
@@ -48,8 +52,9 @@ describe('createJsonlTailer', () => {
   it('buffers an incomplete trailing line until it is completed', async () => {
     writeFileSync(filePath, '')
     const received: TailedLine[][] = []
-    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+    const tailer = createJsonlTailer(filePath, 0, (lines) => {
       received.push(lines)
+      return Promise.resolve()
     })
     tailer.start()
     appendFileSync(filePath, '{"a":1}\n{"partial"')
@@ -68,8 +73,9 @@ describe('createJsonlTailer', () => {
   it('resumes from startOffset without re-reporting earlier lines', async () => {
     writeFileSync(filePath, '{"a":1}\n{"a":2}\n')
     const received: TailedLine[][] = []
-    const tailer = createJsonlTailer(filePath, 8, async (lines) => {
+    const tailer = createJsonlTailer(filePath, 8, (lines) => {
       received.push(lines)
+      return Promise.resolve()
     })
     tailer.start()
     appendFileSync(filePath, '{"a":3}\n')
@@ -85,8 +91,9 @@ describe('createJsonlTailer', () => {
   it('handles multi-byte UTF-8 content with correct byte offsets', async () => {
     writeFileSync(filePath, '')
     const received: TailedLine[][] = []
-    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+    const tailer = createJsonlTailer(filePath, 0, (lines) => {
       received.push(lines)
+      return Promise.resolve()
     })
     tailer.start()
     const line = '{"text":"こんにちは"}'
@@ -103,14 +110,17 @@ describe('createJsonlTailer', () => {
     writeFileSync(filePath, '')
     let callCount = 0
     const received: TailedLine[][] = []
-    const tailer = createJsonlTailer(filePath, 0, async (lines) => {
+    const tailer = createJsonlTailer(filePath, 0, (lines) => {
       callCount += 1
       if (callCount === 1) {
-        throw new Error('simulated post failure')
+        return Promise.reject(new Error('simulated post failure'))
       }
       received.push(lines)
+      return Promise.resolve()
     })
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
     tailer.start()
     appendFileSync(filePath, '{"a":1}\n')
     await waitFor(() => callCount >= 1)

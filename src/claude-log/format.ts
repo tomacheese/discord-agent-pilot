@@ -48,7 +48,8 @@ function textToItems(text: string): PostItem[] {
 function buildGenericSummary(input: Record<string, unknown>): string {
   return Object.entries(input)
     .map(([key, value]) => {
-      const stringValue = typeof value === 'string' ? value : JSON.stringify(value)
+      const stringValue =
+        typeof value === 'string' ? value : JSON.stringify(value)
       const truncated =
         stringValue.length > GENERIC_VALUE_MAX_LENGTH
           ? `${stringValue.slice(0, GENERIC_VALUE_MAX_LENGTH)}...`
@@ -59,7 +60,10 @@ function buildGenericSummary(input: Record<string, unknown>): string {
 }
 
 /** Builds the `<summary>` portion of `⏺ <ToolName>(<summary>)` for a given tool. */
-function buildToolSummary(name: string, input: Record<string, unknown>): string {
+function buildToolSummary(
+  name: string,
+  input: Record<string, unknown>
+): string {
   switch (name) {
     case 'Bash': {
       const command = typeof input.command === 'string' ? input.command : ''
@@ -68,29 +72,34 @@ function buildToolSummary(name: string, input: Record<string, unknown>): string 
       return `\`${command}\`${description}`
     }
     case 'Read': {
-      const filePath = typeof input.file_path === 'string' ? input.file_path : ''
+      const filePath =
+        typeof input.file_path === 'string' ? input.file_path : ''
       const parts: string[] = []
       if (typeof input.offset === 'number') parts.push(`offset=${input.offset}`)
       if (typeof input.limit === 'number') parts.push(`limit=${input.limit}`)
       return parts.length > 0 ? `${filePath} (${parts.join(', ')})` : filePath
     }
     case 'Write':
-    case 'Edit':
+    case 'Edit': {
       return typeof input.file_path === 'string' ? input.file_path : ''
+    }
     case 'Grep':
     case 'Glob': {
       const pattern = typeof input.pattern === 'string' ? input.pattern : ''
-      const pathSuffix = typeof input.path === 'string' ? `, path=${input.path}` : ''
+      const pathSuffix =
+        typeof input.path === 'string' ? `, path=${input.path}` : ''
       return `pattern=${pattern}${pathSuffix}`
     }
-    default:
+    default: {
       return buildGenericSummary(input)
+    }
   }
 }
 
 /** Builds the `-`/`+` unified-style diff body (without the fenced code block wrapper). */
 function buildDiffBlock(oldString: string, newString: string): string {
-  const oldLines = oldString.length > 0 ? oldString.split('\n').map((line) => `-${line}`) : []
+  const oldLines =
+    oldString.length > 0 ? oldString.split('\n').map((line) => `-${line}`) : []
   const newLines = newString.split('\n').map((line) => `+${line}`)
   return [...oldLines, ...newLines].join('\n')
 }
@@ -105,7 +114,8 @@ function buildDiffItem(
   if (diffBlock.length <= DIFF_INLINE_LIMIT) {
     return { kind: 'diff-inline', header, diffBlock }
   }
-  const filePath = typeof input.file_path === 'string' ? input.file_path : 'file'
+  const filePath =
+    typeof input.file_path === 'string' ? input.file_path : 'file'
   const filename = `${toolName}-${path.basename(filePath)}.diff`
   return { kind: 'diff-file', header, filename, content: diffBlock }
 }
@@ -118,25 +128,40 @@ function formatToolUse(block: {
   const header = `⏺ ${block.name}(${buildToolSummary(block.name, block.input)})`
   const summaryItem: PostItem = { kind: 'messages', texts: [header] }
   if (block.name === 'Edit') {
-    const oldString = typeof block.input.old_string === 'string' ? block.input.old_string : ''
-    const newString = typeof block.input.new_string === 'string' ? block.input.new_string : ''
+    const oldString =
+      typeof block.input.old_string === 'string' ? block.input.old_string : ''
+    const newString =
+      typeof block.input.new_string === 'string' ? block.input.new_string : ''
     return [
       summaryItem,
-      buildDiffItem(header, block.name, block.input, buildDiffBlock(oldString, newString)),
+      buildDiffItem(
+        header,
+        block.name,
+        block.input,
+        buildDiffBlock(oldString, newString)
+      ),
     ]
   }
   if (block.name === 'Write') {
-    const content = typeof block.input.content === 'string' ? block.input.content : ''
+    const content =
+      typeof block.input.content === 'string' ? block.input.content : ''
     return [
       summaryItem,
-      buildDiffItem(header, block.name, block.input, buildDiffBlock('', content)),
+      buildDiffItem(
+        header,
+        block.name,
+        block.input,
+        buildDiffBlock('', content)
+      ),
     ]
   }
   return [summaryItem]
 }
 
 /** Converts an assistant entry's content blocks into Discord PostItems, in order. */
-export function formatAssistantEntry(content: AssistantContentBlock[]): PostItem[] {
+export function formatAssistantEntry(
+  content: AssistantContentBlock[]
+): PostItem[] {
   const items: PostItem[] = []
   for (const block of content) {
     if (block.type === 'thinking') {

@@ -109,9 +109,7 @@ describe('formatAssistantEntry', () => {
     ])
     const item = result[0]
     if (item.kind !== 'messages') throw new Error('expected messages item')
-    expect(item.texts[0]).toBe(
-      `⏺ UnknownTool(note=${'x'.repeat(100)}...)`
-    )
+    expect(item.texts[0]).toBe(`⏺ UnknownTool(note=${'x'.repeat(100)}...)`)
   })
 
   it('produces a header message plus an inline diff item for a small Edit', () => {
@@ -157,9 +155,10 @@ describe('formatAssistantEntry', () => {
   })
 
   it('switches to a diff-file item when the diff exceeds 1900 characters', () => {
-    const bigContent = Array.from({ length: 210 }, (_, index) => `line ${index}`).join(
-      '\n'
-    )
+    const bigContent = Array.from(
+      { length: 210 },
+      (_, index) => `line ${index}`
+    ).join('\n')
     const result = formatAssistantEntry([
       {
         type: 'tool_use',
@@ -170,7 +169,8 @@ describe('formatAssistantEntry', () => {
     ])
     expect(result).toHaveLength(2)
     const diffItem = result[1]
-    if (diffItem.kind !== 'diff-file') throw new Error('expected diff-file item')
+    if (diffItem.kind !== 'diff-file')
+      throw new Error('expected diff-file item')
     expect(diffItem.filename).toBe('Write-big.ts.diff')
     expect(diffItem.header).toBe('⏺ Write(/tmp/big.ts)')
     expect(diffItem.content.startsWith('+line 0')).toBe(true)

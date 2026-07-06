@@ -83,7 +83,11 @@ describe('input_queue migration', () => {
     const row = db
       .prepare('SELECT session_id AS sessionId, body, state FROM input_queue')
       .get()
-    expect(row).toEqual({ sessionId: 'session-1', body: 'hello', state: 'sent' })
+    expect(row).toEqual({
+      sessionId: 'session-1',
+      body: 'hello',
+      state: 'sent',
+    })
     db.close()
   })
 })
