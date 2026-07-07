@@ -127,4 +127,43 @@ describe('parseJsonlLine', () => {
     expect(warn).toHaveBeenCalledOnce()
     warn.mockRestore()
   })
+
+  it('parses an agent-name entry', () => {
+    const line = JSON.stringify({
+      type: 'agent-name',
+      agentName: 'auth-refactor',
+      sessionId: 'session-1',
+    })
+    expect(parseJsonlLine(line)).toEqual({
+      kind: 'agent-name',
+      agentName: 'auth-refactor',
+    })
+  })
+
+  it('ignores an agent-name entry with a non-string agentName', () => {
+    const line = JSON.stringify({ type: 'agent-name', agentName: 123 })
+    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
+  })
+
+  it('ignores an agent-name entry with an empty agentName', () => {
+    const line = JSON.stringify({ type: 'agent-name', agentName: '' })
+    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
+  })
+
+  it('parses an ai-title entry', () => {
+    const line = JSON.stringify({
+      type: 'ai-title',
+      aiTitle: 'Git workflow setup with master branch',
+      sessionId: 'session-1',
+    })
+    expect(parseJsonlLine(line)).toEqual({
+      kind: 'ai-title',
+      aiTitle: 'Git workflow setup with master branch',
+    })
+  })
+
+  it('ignores an ai-title entry with a non-string aiTitle', () => {
+    const line = JSON.stringify({ type: 'ai-title', aiTitle: null })
+    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
+  })
 })

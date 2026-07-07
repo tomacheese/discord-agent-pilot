@@ -61,7 +61,12 @@ async function main(): Promise<void> {
     getThread: async (threadId) => {
       // eslint-disable-next-line unicorn/prefer-await
       const channel = await client.channels.fetch(threadId).catch(() => null)
-      if (!channel || !('send' in channel) || !('sendTyping' in channel)) {
+      if (
+        !channel ||
+        !('send' in channel) ||
+        !('sendTyping' in channel) ||
+        !('setName' in channel)
+      ) {
         return undefined
       }
       return {
@@ -78,6 +83,7 @@ async function main(): Promise<void> {
             allowedMentions: { parse: [] },
           }),
         sendTyping: () => channel.sendTyping(),
+        setName: (name: string) => channel.setName(name),
       }
     },
     pollIntervalMs: LOG_SYNC_POLL_INTERVAL_MS,
