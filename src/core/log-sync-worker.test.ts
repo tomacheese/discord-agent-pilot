@@ -533,7 +533,10 @@ describe('runLogSyncCycle', () => {
   it('does not downgrade an already-applied agent-name when an ai-title appears', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
-    insertSession(db, makeSession({ jsonlPath, threadNameSource: 'agent-name' }))
+    insertSession(
+      db,
+      makeSession({ jsonlPath, threadNameSource: 'agent-name' })
+    )
     const setName = vi.fn().mockResolvedValue(undefined)
     const thread: DiscordThread = {
       send: vi.fn().mockResolvedValue(undefined),
@@ -579,8 +582,7 @@ describe('runLogSyncCycle', () => {
 
     await runLogSyncCycle(dependencies)
     const line =
-      JSON.stringify({ type: 'agent-name', agentName: 'auth-refactor' }) +
-      '\n'
+      JSON.stringify({ type: 'agent-name', agentName: 'auth-refactor' }) + '\n'
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => setName.mock.calls.length > 0)
