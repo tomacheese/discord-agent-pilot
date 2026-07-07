@@ -178,15 +178,25 @@ describe('formatAssistantEntry', () => {
 })
 
 describe('formatUserEntry', () => {
-  it('formats a normal tool_result as a messages item', () => {
+  it('summarizes a normal tool_result as a line/character count instead of its full content', () => {
     const result = formatUserEntry(
       [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'total 0' }],
       () => false
     )
-    expect(result).toEqual([{ kind: 'messages', texts: ['total 0'] }])
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['(結果: 1行, 7文字)'] },
+    ])
   })
 
-  it('prefixes an is_error tool_result with a warning marker', () => {
+  it('omits a normal tool_result entirely when its content is empty', () => {
+    const result = formatUserEntry(
+      [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '' }],
+      () => false
+    )
+    expect(result).toEqual([])
+  })
+
+  it('summarizes an is_error tool_result with a warning marker and a line/character count', () => {
     const result = formatUserEntry(
       [
         {
@@ -199,7 +209,24 @@ describe('formatUserEntry', () => {
       () => false
     )
     expect(result).toEqual([
-      { kind: 'messages', texts: ['⚠️ Error: command not found'] },
+      { kind: 'messages', texts: ['⚠️ Error (結果: 1行, 17文字)'] },
+    ])
+  })
+
+  it('still posts a summary for an is_error tool_result even when its content is empty', () => {
+    const result = formatUserEntry(
+      [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_2',
+          content: '',
+          is_error: true,
+        },
+      ],
+      () => false
+    )
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['⚠️ Error (結果: 1行, 0文字)'] },
     ])
   })
 

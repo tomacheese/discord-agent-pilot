@@ -44,6 +44,16 @@ function textToItems(text: string): PostItem[] {
   return texts.length > 0 ? [{ kind: 'messages', texts }] : []
 }
 
+/**
+ * Builds the `(結果: N行, M文字)` summary text that replaces a tool_result's
+ * full content in the Discord post — showing size only, not the content
+ * itself.
+ */
+function buildResultSummary(content: string): string {
+  const lineCount = content.split('\n').length
+  return `(結果: ${lineCount}行, ${content.length}文字)`
+}
+
 /** Builds the `key=value, ...` fallback summary used for tools with no dedicated format. */
 function buildGenericSummary(input: Record<string, unknown>): string {
   return Object.entries(input)
@@ -188,8 +198,17 @@ export function formatUserEntry(
   const items: PostItem[] = []
   for (const block of content) {
     if (block.type === 'tool_result') {
-      const prefix = block.is_error === true ? '⚠️ Error: ' : ''
-      items.push(...textToItems(prefix + block.content))
+      if (block.is_error === true) {
+        items.push({
+          kind: 'messages',
+          texts: [`⚠️ Error ${buildResultSummary(block.content)}`],
+        })
+      } else if (block.content.length > 0) {
+        items.push({
+          kind: 'messages',
+          texts: [buildResultSummary(block.content)],
+        })
+      }
     } else if (!isEcho(block.text)) {
       items.push(...textToItems(block.text))
     }
