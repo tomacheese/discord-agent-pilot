@@ -65,4 +65,11 @@ describe('thread name source', () => {
     updateThreadNameSource(db, 'session-1', 'agent-name')
     expect(getThreadNameSource(db, 'session-1')).toBe('agent-name')
   })
+
+  it('throws a clear error for an unknown sessionId', () => {
+    const db = openRegistryDb(':memory:')
+    expect(() => {
+      getThreadNameSource(db, 'unknown')
+    }).toThrow('No session found for id: unknown')
+  })
 })

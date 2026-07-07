@@ -231,6 +231,12 @@ async function processLine(
     if (shouldApplyThreadName(session.threadNameSource, candidateSource)) {
       await thread.setName(truncateThreadTitle(candidateTitle))
       updateThreadNameSource(dependencies.db, session.id, candidateSource)
+      // Keep the in-memory session object (captured for this tailer's whole
+      // lifetime) in sync with what was just persisted, so a later line in
+      // the same tailer does not compare against a stale source and
+      // incorrectly downgrade an already-applied name (e.g. agent-name ->
+      // ai-title).
+      session.threadNameSource = candidateSource
     }
     updateJsonlOffset(dependencies.db, session.id, offsetAfter)
     return

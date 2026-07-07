@@ -73,7 +73,10 @@ export function updateThreadNameSource(
   )
 }
 
-/** Reads the current `thread_name_source` for `sessionId`. */
+/**
+ * Reads the current `thread_name_source` for `sessionId`.
+ * @throws {Error} If no session row exists for `sessionId`.
+ */
 export function getThreadNameSource(
   db: Database.Database,
   sessionId: string
@@ -82,6 +85,9 @@ export function getThreadNameSource(
     .prepare(
       'SELECT thread_name_source AS threadNameSource FROM sessions WHERE id = ?'
     )
-    .get(sessionId) as { threadNameSource: ThreadNameSource }
+    .get(sessionId) as { threadNameSource: ThreadNameSource } | undefined
+  if (!row) {
+    throw new Error(`No session found for id: ${sessionId}`)
+  }
   return row.threadNameSource
 }

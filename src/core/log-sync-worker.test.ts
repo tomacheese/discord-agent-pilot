@@ -564,6 +564,69 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
+  it('does not downgrade to ai-title after an agent-name was applied earlier in the same tailer', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const setName = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+      setName,
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+
+    // Start a single tailer for this session (one reconcile cycle) so both
+    // lines below are processed by the same tailer/closure, exercising the
+    // in-memory session object across two onLines batches.
+    await runLogSyncCycle(dependencies)
+
+    const agentNameLine =
+      JSON.stringify({ type: 'agent-name', agentName: 'auth-refactor' }) + '\n'
+    writeFileSync(jsonlPath, agentNameLine)
+
+    await waitFor(() => setName.mock.calls.length > 0)
+    expect(setName).toHaveBeenCalledWith('auth-refactor')
+    await waitFor(() => {
+      const row = db
+        .prepare(
+          'SELECT thread_name_source AS threadNameSource FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { threadNameSource: string }
+      return row.threadNameSource === 'agent-name'
+    })
+
+    // A later ai-title line arrives through the same tailer. Without the
+    // fix, the tailer's stale in-memory session object would still compare
+    // against 'fallback' and incorrectly downgrade the name.
+    const aiTitleLine =
+      JSON.stringify({ type: 'ai-title', aiTitle: 'stale summary' }) + '\n'
+    const batch = agentNameLine + aiTitleLine
+    writeFileSync(jsonlPath, batch)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(batch, 'utf8')
+    })
+
+    expect(setName).toHaveBeenCalledTimes(1)
+    expect(setName).toHaveBeenCalledWith('auth-refactor')
+    const row = db
+      .prepare(
+        'SELECT thread_name_source AS threadNameSource FROM sessions WHERE id = ?'
+      )
+      .get('session-1') as { threadNameSource: string }
+    expect(row.threadNameSource).toBe('agent-name')
+
+    db.close()
+  })
+
   it('applies an agent-name over a previously-applied ai-title', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
