@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { openRegistryDb } from './db'
-import { findSessionById, insertSession, type SessionRow } from './sessions'
+import {
+  findSessionById,
+  getThreadNameSource,
+  insertSession,
+  updateThreadNameSource,
+  type SessionRow,
+} from './sessions'
 
 function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -15,6 +21,7 @@ function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
       '/host/claude-config/projects/-mnt-ssd-repos-example/session-1.jsonl',
     jsonlOffset: 0,
     status: 'discovered',
+    threadNameSource: 'fallback',
     createdAt: 1000,
     updatedAt: 1000,
     ...overrides,
@@ -40,5 +47,29 @@ describe('sessions registry', () => {
     expect(() => {
       insertSession(db, makeRow())
     }).toThrow()
+  })
+})
+
+describe('thread name source', () => {
+  it('defaults to "fallback" for a newly inserted row', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+    expect(getThreadNameSource(db, 'session-1')).toBe('fallback')
+  })
+
+  it('updates and reads back the thread name source', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+    updateThreadNameSource(db, 'session-1', 'ai-title')
+    expect(getThreadNameSource(db, 'session-1')).toBe('ai-title')
+    updateThreadNameSource(db, 'session-1', 'agent-name')
+    expect(getThreadNameSource(db, 'session-1')).toBe('agent-name')
+  })
+
+  it('throws a clear error for an unknown sessionId', () => {
+    const db = openRegistryDb(':memory:')
+    expect(() => {
+      getThreadNameSource(db, 'unknown')
+    }).toThrow('No session found for id: unknown')
   })
 })

@@ -110,7 +110,7 @@ describe('runDetectionCycle', () => {
 
     await runDetectionCycle(dependencies, makeConfig())
 
-    expect(createSessionThread).toHaveBeenCalledWith('session-1')
+    expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     expect(findSessionById(dependencies.db, 'session-1')).toBeDefined()
   })
 
@@ -212,7 +212,7 @@ describe('runDetectionCycle', () => {
     await runDetectionCycle(dependencies, makeConfig())
 
     expect(findClaudeProcessPid).toHaveBeenCalledWith('/proc', '100')
-    expect(createSessionThread).toHaveBeenCalledWith('session-2')
+    expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     expect(findSessionById(dependencies.db, 'session-2')).toBeDefined()
   })
 
@@ -248,7 +248,7 @@ describe('runDetectionCycle', () => {
 
     await runDetectionCycle(dependencies, makeConfig())
 
-    expect(createSessionThread).toHaveBeenCalledWith('session-b')
+    expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     const row = findSessionById(dependencies.db, 'session-b')
     expect(row).toBeDefined()
     expect(row?.jsonlPath).toBe(
@@ -362,7 +362,7 @@ describe('runDetectionCycle', () => {
       runDetectionCycle(dependencies, makeConfig())
     ).resolves.toBeUndefined()
 
-    expect(createSessionThread).toHaveBeenCalledWith('session-1')
+    expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     error.mockRestore()
   })
 })

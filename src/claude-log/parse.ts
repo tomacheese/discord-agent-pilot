@@ -2,7 +2,9 @@
 export type ParsedEntry =
   | { kind: 'assistant'; content: AssistantContentBlock[] }
   | { kind: 'user'; content: UserContentBlock[] }
-  | { kind: 'ignored' } // any top-level type other than assistant/user
+  | { kind: 'agent-name'; agentName: string }
+  | { kind: 'ai-title'; aiTitle: string }
+  | { kind: 'ignored' } // any top-level type not covered by the other variants above
 
 /** A content block found inside an `assistant` entry's `message.content[]`. */
 export type AssistantContentBlock =
@@ -130,6 +132,20 @@ export function parseJsonlLine(line: string): ParsedEntry | undefined {
   }
   if (type === 'user') {
     return { kind: 'user', content: parseUserContent(raw) }
+  }
+  if (type === 'agent-name') {
+    const agentName = (raw as { agentName?: unknown }).agentName
+    if (typeof agentName === 'string' && agentName !== '') {
+      return { kind: 'agent-name', agentName }
+    }
+    return { kind: 'ignored' }
+  }
+  if (type === 'ai-title') {
+    const aiTitle = (raw as { aiTitle?: unknown }).aiTitle
+    if (typeof aiTitle === 'string' && aiTitle !== '') {
+      return { kind: 'ai-title', aiTitle }
+    }
+    return { kind: 'ignored' }
   }
   return { kind: 'ignored' }
 }
