@@ -1,17 +1,13 @@
-import path from 'node:path'
 import type { AssistantContentBlock, UserContentBlock } from './parse'
 
 /** A single unit of Discord output derived from one or more JSONL content blocks. */
 export type PostItem =
   | { kind: 'typing' } // a thinking block: send a typing indicator, no message
   | { kind: 'messages'; texts: string[] } // pre-split plain-text messages (at most `MAX_TEXT_MESSAGES`)
-  | { kind: 'diff-inline'; header: string; diffBlock: string } // rendered as a ```diff``` fenced block
-  | { kind: 'diff-file'; header: string; filename: string; content: string } // posted as a file attachment
 
 const MAX_MESSAGE_LENGTH = 2000
 const MAX_TEXT_MESSAGES = 5
 const TRUNCATION_NOTICE = '\n...(以下省略、全文は JSONL 参照)'
-const DIFF_INLINE_LIMIT = 1900
 const GENERIC_VALUE_MAX_LENGTH = 100
 
 /**
@@ -106,66 +102,40 @@ function buildToolSummary(
   }
 }
 
-/** Builds the `-`/`+` unified-style diff body (without the fenced code block wrapper). */
-function buildDiffBlock(oldString: string, newString: string): string {
-  const oldLines =
-    oldString.length > 0 ? oldString.split('\n').map((line) => `-${line}`) : []
-  const newLines = newString.split('\n').map((line) => `+${line}`)
-  return [...oldLines, ...newLines].join('\n')
+/**
+ * Counts the lines in `text`, treating an empty string as zero lines. This
+ * keeps a full-add or full-delete `Edit` symmetric (`+0`/`-0` on the empty
+ * side) instead of reporting a phantom `+1`/`-1` from splitting `''` on
+ * `\n` (which yields `['']`, one element).
+ */
+function countDiffLines(text: string): number {
+  return text.length > 0 ? text.split('\n').length : 0
 }
 
-/** Wraps a diff body into a `diff-inline` or `diff-file` PostItem depending on its size. */
-function buildDiffItem(
-  header: string,
-  toolName: string,
-  input: Record<string, unknown>,
-  diffBlock: string
-): PostItem {
-  if (diffBlock.length <= DIFF_INLINE_LIMIT) {
-    return { kind: 'diff-inline', header, diffBlock }
-  }
-  const filePath =
-    typeof input.file_path === 'string' ? input.file_path : 'file'
-  const filename = `${toolName}-${path.basename(filePath)}.diff`
-  return { kind: 'diff-file', header, filename, content: diffBlock }
-}
-
-/** Formats a single `tool_use` block into one or more PostItems (summary, plus a diff for tools that produce one). */
+/** Formats a single `tool_use` block into a header-line PostItem, appending an added/removed line count for Edit/Write. */
 function formatToolUse(block: {
   name: string
   input: Record<string, unknown>
 }): PostItem[] {
-  const header = `⏺ ${block.name}(${buildToolSummary(block.name, block.input)})`
-  const summaryItem: PostItem = { kind: 'messages', texts: [header] }
+  const summary = `⏺ ${block.name}(${buildToolSummary(block.name, block.input)})`
   if (block.name === 'Edit') {
     const oldString =
       typeof block.input.old_string === 'string' ? block.input.old_string : ''
     const newString =
       typeof block.input.new_string === 'string' ? block.input.new_string : ''
+    const added = countDiffLines(newString)
+    const removed = countDiffLines(oldString)
     return [
-      summaryItem,
-      buildDiffItem(
-        header,
-        block.name,
-        block.input,
-        buildDiffBlock(oldString, newString)
-      ),
+      { kind: 'messages', texts: [`${summary} (+${added} -${removed})`] },
     ]
   }
   if (block.name === 'Write') {
     const content =
       typeof block.input.content === 'string' ? block.input.content : ''
-    return [
-      summaryItem,
-      buildDiffItem(
-        header,
-        block.name,
-        block.input,
-        buildDiffBlock('', content)
-      ),
-    ]
+    const added = countDiffLines(content)
+    return [{ kind: 'messages', texts: [`${summary} (+${added})`] }]
   }
-  return [summaryItem]
+  return [{ kind: 'messages', texts: [summary] }]
 }
 
 /** Converts an assistant entry's content blocks into Discord PostItems, in order. */
