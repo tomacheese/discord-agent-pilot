@@ -3,9 +3,9 @@
  * `AttachmentBuilder`/`send`.
  *
  * discord.js interprets a non-URL string as a filesystem path and throws
- * `FileNotFound` if `fs.stat` can't find it. A `diff-file` `PostItem`'s
- * `data` is the diff text itself (not a path), so string input must always
- * be converted to a `Buffer` before being passed through.
+ * `FileNotFound` if `fs.stat` can't find it. File attachment content is
+ * often produced as a string (not a path), so string input must always be
+ * converted to a `Buffer` before being passed through.
  * @param data - The attachment content (string or Buffer)
  * @returns A Buffer suitable for discord.js's `attachment` field
  */

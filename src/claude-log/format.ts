@@ -125,9 +125,7 @@ function formatToolUse(block: {
       typeof block.input.new_string === 'string' ? block.input.new_string : ''
     const added = countDiffLines(newString)
     const removed = countDiffLines(oldString)
-    return [
-      { kind: 'messages', texts: [`${summary} (+${added} -${removed})`] },
-    ]
+    return [{ kind: 'messages', texts: [`${summary} (+${added} -${removed})`] }]
   }
   if (block.name === 'Write') {
     const content =
