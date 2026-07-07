@@ -4,7 +4,7 @@ export type ParsedEntry =
   | { kind: 'user'; content: UserContentBlock[] }
   | { kind: 'agent-name'; agentName: string }
   | { kind: 'ai-title'; aiTitle: string }
-  | { kind: 'ignored' } // any top-level type other than assistant/user/agent-name/ai-title
+  | { kind: 'ignored' } // any top-level type not covered by the other variants above
 
 /** A content block found inside an `assistant` entry's `message.content[]`. */
 export type AssistantContentBlock =

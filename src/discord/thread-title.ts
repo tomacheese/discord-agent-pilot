@@ -9,11 +9,10 @@ const UNKNOWN_PROJECT_NAME = 'session'
 /**
  * Derives the human-readable project name from `cwd` (its last path
  * segment). Falls back to `'session'` if `cwd` is empty, `/`, or otherwise
- * yields an empty last segment — this function never returns an empty
- * string. Note: a single trailing slash (e.g. `/repos/foo/`) does NOT hit
- * this fallback, since `node:path`'s `basename` already strips trailing
- * separators before computing the last segment (`path.basename('/repos/foo/')
- * === 'foo'`).
+ * yields an empty last segment — this function never returns an empty string.
+ * Note: a single trailing slash (e.g. `/repos/foo/`) does NOT hit this
+ * fallback, since `node:path`'s `basename` already strips trailing separators
+ * before computing the last segment.
  */
 export function projectNameFromCwd(cwd: string): string {
   const base = path.basename(cwd)

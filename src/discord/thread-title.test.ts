@@ -21,11 +21,9 @@ describe('projectNameFromCwd', () => {
   })
 
   it('ignores a trailing slash rather than treating it as an empty segment', () => {
-    // node:path's `basename` already strips trailing separators before
-    // computing the last segment (`path.basename('/mnt/ssd/repos/') ===
-    // 'repos'`), so a single trailing slash never actually reaches the
-    // "empty last segment" fallback branch — verified against the real
-    // `path.basename` at plan-review time.
+    // node:path's `basename` already strips trailing separators, so a single
+    // trailing slash never actually reaches the "empty last segment"
+    // fallback branch.
     expect(projectNameFromCwd('/mnt/ssd/repos/')).toBe('repos')
   })
 })
@@ -38,9 +36,7 @@ describe('buildFallbackThreadTitle', () => {
   })
 
   it('truncates the combined title to 100 characters', () => {
-    // 100 'p's + ' (main)' (7 chars) = 107 chars, i.e. over the 100-char
-    // limit; a shorter repeat (e.g. 90) stays under 100 chars total and
-    // would not exercise truncation at all.
+    // 107 chars total, over the 100-char limit — needed to exercise truncation.
     const longProject = 'p'.repeat(100)
     const title = buildFallbackThreadTitle(`/repos/${longProject}`, 'main')
     expect(title.length).toBe(100)
