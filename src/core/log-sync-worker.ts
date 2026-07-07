@@ -143,25 +143,6 @@ async function postItem(thread: DiscordThread, item: PostItem): Promise<void> {
       for (const text of item.texts) {
         await thread.send({ content: text })
       }
-      return
-    }
-    case 'diff-inline': {
-      // Neutralize any triple-backtick sequence embedded in the diff content
-      // so it cannot prematurely close the surrounding ```diff fence.
-      const safeDiffBlock = item.diffBlock.replaceAll('```', '`​``')
-      await thread.send({ content: '```diff\n' + safeDiffBlock + '\n```' })
-      return
-    }
-    case 'diff-file': {
-      // The header was already posted as a separate `messages` PostItem by
-      // formatAssistantEntry's summaryItem, so it is not repeated here as
-      // the file's caption (mirrors diff-inline, which also omits it).
-      await thread.send({
-        files: [{ name: item.filename, data: item.content }],
-      })
-      // Explicit return for consistency with the other switch cases above.
-      // eslint-disable-next-line no-useless-return
-      return
     }
   }
 }

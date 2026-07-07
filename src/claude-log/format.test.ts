@@ -112,7 +112,7 @@ describe('formatAssistantEntry', () => {
     expect(item.texts[0]).toBe(`⏺ UnknownTool(note=${'x'.repeat(100)}...)`)
   })
 
-  it('produces a header message plus an inline diff item for a small Edit', () => {
+  it('formats an Edit tool_use as a single header line with added/removed line counts', () => {
     const result = formatAssistantEntry([
       {
         type: 'tool_use',
@@ -126,16 +126,11 @@ describe('formatAssistantEntry', () => {
       },
     ])
     expect(result).toEqual([
-      { kind: 'messages', texts: ['⏺ Edit(/tmp/foo.ts)'] },
-      {
-        kind: 'diff-inline',
-        header: '⏺ Edit(/tmp/foo.ts)',
-        diffBlock: '-const a = 1\n+const a = 2',
-      },
+      { kind: 'messages', texts: ['⏺ Edit(/tmp/foo.ts) (+1 -1)'] },
     ])
   })
 
-  it('produces a header message plus an inline diff item for a small Write (all + lines)', () => {
+  it('formats a Write tool_use as a single header line with an added line count', () => {
     const result = formatAssistantEntry([
       {
         type: 'tool_use',
@@ -145,48 +140,65 @@ describe('formatAssistantEntry', () => {
       },
     ])
     expect(result).toEqual([
-      { kind: 'messages', texts: ['⏺ Write(/tmp/new.ts)'] },
-      {
-        kind: 'diff-inline',
-        header: '⏺ Write(/tmp/new.ts)',
-        diffBlock: '+line1\n+line2',
-      },
+      { kind: 'messages', texts: ['⏺ Write(/tmp/new.ts) (+2)'] },
     ])
   })
 
-  it('switches to a diff-file item when the diff exceeds 1900 characters', () => {
-    const bigContent = Array.from(
-      { length: 210 },
-      (_, index) => `line ${index}`
-    ).join('\n')
-    const result = formatAssistantEntry([
+  it('reports +0/-0 for an Edit that fully deletes or fully adds content', () => {
+    const fullDelete = formatAssistantEntry([
       {
         type: 'tool_use',
         id: 'toolu_8',
-        name: 'Write',
-        input: { file_path: '/tmp/big.ts', content: bigContent },
+        name: 'Edit',
+        input: {
+          file_path: '/tmp/foo.ts',
+          old_string: 'line1\nline2',
+          new_string: '',
+        },
       },
     ])
-    expect(result).toHaveLength(2)
-    const diffItem = result[1]
-    if (diffItem.kind !== 'diff-file')
-      throw new Error('expected diff-file item')
-    expect(diffItem.filename).toBe('Write-big.ts.diff')
-    expect(diffItem.header).toBe('⏺ Write(/tmp/big.ts)')
-    expect(diffItem.content.startsWith('+line 0')).toBe(true)
+    expect(fullDelete).toEqual([
+      { kind: 'messages', texts: ['⏺ Edit(/tmp/foo.ts) (+0 -2)'] },
+    ])
+
+    const fullAdd = formatAssistantEntry([
+      {
+        type: 'tool_use',
+        id: 'toolu_9',
+        name: 'Edit',
+        input: {
+          file_path: '/tmp/foo.ts',
+          old_string: '',
+          new_string: 'line1\nline2',
+        },
+      },
+    ])
+    expect(fullAdd).toEqual([
+      { kind: 'messages', texts: ['⏺ Edit(/tmp/foo.ts) (+2 -0)'] },
+    ])
   })
 })
 
 describe('formatUserEntry', () => {
-  it('formats a normal tool_result as a messages item', () => {
+  it('summarizes a normal tool_result as a line/character count instead of its full content', () => {
     const result = formatUserEntry(
       [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'total 0' }],
       () => false
     )
-    expect(result).toEqual([{ kind: 'messages', texts: ['total 0'] }])
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['(結果: 1行, 7文字)'] },
+    ])
   })
 
-  it('prefixes an is_error tool_result with a warning marker', () => {
+  it('omits a normal tool_result entirely when its content is empty', () => {
+    const result = formatUserEntry(
+      [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '' }],
+      () => false
+    )
+    expect(result).toEqual([])
+  })
+
+  it('summarizes an is_error tool_result with a warning marker and a line/character count', () => {
     const result = formatUserEntry(
       [
         {
@@ -199,7 +211,24 @@ describe('formatUserEntry', () => {
       () => false
     )
     expect(result).toEqual([
-      { kind: 'messages', texts: ['⚠️ Error: command not found'] },
+      { kind: 'messages', texts: ['⚠️ Error (結果: 1行, 17文字)'] },
+    ])
+  })
+
+  it('still posts a summary for an is_error tool_result even when its content is empty', () => {
+    const result = formatUserEntry(
+      [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_2',
+          content: '',
+          is_error: true,
+        },
+      ],
+      () => false
+    )
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['⚠️ Error (結果: 1行, 0文字)'] },
     ])
   })
 
