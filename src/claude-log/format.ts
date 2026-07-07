@@ -41,13 +41,26 @@ function textToItems(text: string): PostItem[] {
 }
 
 /**
+ * Counts the lines in `text` by scanning for newline characters, matching
+ * `text.split('\n').length` (empty string counts as 1 line) without
+ * allocating an array of substrings — large tool outputs can otherwise
+ * trigger an avoidable memory/time spike.
+ */
+function countLines(text: string): number {
+  let count = 1
+  for (let index = 0; index < text.length; index++) {
+    if (text.codePointAt(index) === 10) count++
+  }
+  return count
+}
+
+/**
  * Builds the `(結果: N行, M文字)` summary text that replaces a tool_result's
  * full content in the Discord post — showing size only, not the content
  * itself.
  */
 function buildResultSummary(content: string): string {
-  const lineCount = content.split('\n').length
-  return `(結果: ${lineCount}行, ${content.length}文字)`
+  return `(結果: ${countLines(content)}行, ${content.length}文字)`
 }
 
 /** Builds the `key=value, ...` fallback summary used for tools with no dedicated format. */
@@ -103,13 +116,13 @@ function buildToolSummary(
 }
 
 /**
- * Counts the lines in `text`, treating an empty string as zero lines. This
- * keeps a full-add or full-delete `Edit` symmetric (`+0`/`-0` on the empty
- * side) instead of reporting a phantom `+1`/`-1` from splitting `''` on
- * `\n` (which yields `['']`, one element).
+ * Counts the lines in `text` for diff purposes, treating an empty string as
+ * zero lines. This keeps a full-add or full-delete `Edit` symmetric
+ * (`+0`/`-0` on the empty side) instead of reporting a phantom `+1`/`-1`
+ * from `countLines('')`, which (matching `''.split('\n')`) returns 1.
  */
 function countDiffLines(text: string): number {
-  return text.length > 0 ? text.split('\n').length : 0
+  return text.length > 0 ? countLines(text) : 0
 }
 
 /** Formats a single `tool_use` block into a header-line PostItem, appending an added/removed line count for Edit/Write. */
