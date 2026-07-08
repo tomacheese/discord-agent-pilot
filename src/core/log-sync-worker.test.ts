@@ -422,6 +422,49 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
+  it('advances jsonl_offset past a failing thread rename instead of retrying forever', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const setName = vi.fn().mockRejectedValue(new Error('discord API error'))
+    const thread: DiscordThread = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn(),
+      setName,
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Fix login bug' }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(setName).toHaveBeenCalledTimes(1)
+    const row = db
+      .prepare(
+        'SELECT thread_name_source AS threadNameSource FROM sessions WHERE id = ?'
+      )
+      .get('session-1') as { threadNameSource: string }
+    // The failed rename must not be recorded as the applied source.
+    expect(row.threadNameSource).toBe('fallback')
+
+    errorSpy.mockRestore()
+    db.close()
+  })
+
   it('does not downgrade an already-applied agent-name when an ai-title appears', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
