@@ -34,6 +34,17 @@ function splitTextIntoMessages(text: string): string[] {
   return chunks
 }
 
+/**
+ * Truncates `text` to fit within `MAX_MESSAGE_LENGTH`, appending
+ * `TRUNCATION_NOTICE` (itself kept within the limit) when it doesn't
+ * already fit.
+ */
+function truncateToMessageLimit(text: string): string {
+  if (text.length <= MAX_MESSAGE_LENGTH) return text
+  const limit = MAX_MESSAGE_LENGTH - TRUNCATION_NOTICE.length
+  return text.slice(0, limit) + TRUNCATION_NOTICE
+}
+
 /** Builds a `messages` PostItem from `text`, or returns an empty array for empty text. */
 function textToItems(text: string): PostItem[] {
   const texts = splitTextIntoMessages(text)
@@ -138,15 +149,25 @@ function formatToolUse(block: {
       typeof block.input.new_string === 'string' ? block.input.new_string : ''
     const added = countDiffLines(newString)
     const removed = countDiffLines(oldString)
-    return [{ kind: 'messages', texts: [`${summary} (+${added} -${removed})`] }]
+    return [
+      {
+        kind: 'messages',
+        texts: [truncateToMessageLimit(`${summary} (+${added} -${removed})`)],
+      },
+    ]
   }
   if (block.name === 'Write') {
     const content =
       typeof block.input.content === 'string' ? block.input.content : ''
     const added = countDiffLines(content)
-    return [{ kind: 'messages', texts: [`${summary} (+${added})`] }]
+    return [
+      {
+        kind: 'messages',
+        texts: [truncateToMessageLimit(`${summary} (+${added})`)],
+      },
+    ]
   }
-  return [{ kind: 'messages', texts: [summary] }]
+  return [{ kind: 'messages', texts: [truncateToMessageLimit(summary)] }]
 }
 
 /** Converts an assistant entry's content blocks into Discord PostItems, in order. */

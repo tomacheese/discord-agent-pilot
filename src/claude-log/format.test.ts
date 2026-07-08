@@ -112,6 +112,48 @@ describe('formatAssistantEntry', () => {
     expect(item.texts[0]).toBe(`⏺ UnknownTool(note=${'x'.repeat(100)}...)`)
   })
 
+  it('truncates an overly long Bash command summary to fit within the Discord message limit', () => {
+    const longCommand = 'echo ' + 'a'.repeat(3000)
+    const result = formatAssistantEntry([
+      {
+        type: 'tool_use',
+        id: 'toolu_10',
+        name: 'Bash',
+        input: { command: longCommand },
+      },
+    ])
+    const item = result[0]
+    if (item.kind !== 'messages') throw new Error('expected messages item')
+    expect(item.texts).toHaveLength(1)
+    expect(item.texts[0].length).toBeLessThanOrEqual(2000)
+    expect(item.texts[0].endsWith('...(以下省略、全文は JSONL 参照)')).toBe(
+      true
+    )
+  })
+
+  it('truncates a long Edit summary while keeping the added/removed suffix within the limit', () => {
+    const longPath = '/tmp/' + 'a'.repeat(3000) + '.ts'
+    const result = formatAssistantEntry([
+      {
+        type: 'tool_use',
+        id: 'toolu_11',
+        name: 'Edit',
+        input: {
+          file_path: longPath,
+          old_string: 'const a = 1',
+          new_string: 'const a = 2',
+        },
+      },
+    ])
+    const item = result[0]
+    if (item.kind !== 'messages') throw new Error('expected messages item')
+    expect(item.texts).toHaveLength(1)
+    expect(item.texts[0].length).toBeLessThanOrEqual(2000)
+    expect(item.texts[0].endsWith('...(以下省略、全文は JSONL 参照)')).toBe(
+      true
+    )
+  })
+
   it('formats an Edit tool_use as a single header line with added/removed line counts', () => {
     const result = formatAssistantEntry([
       {
