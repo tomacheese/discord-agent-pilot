@@ -96,16 +96,11 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
-  it('does not advance jsonl_offset when posting fails, and does not lose the line', async () => {
+  it('advances jsonl_offset past a line whose post fails, instead of retrying forever', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
     insertSession(db, makeSession({ jsonlPath }))
-    let callCount = 0
-    const send = vi.fn().mockImplementation(() => {
-      callCount += 1
-      if (callCount === 1) return Promise.reject(new Error('discord API error'))
-      return Promise.resolve(undefined)
-    })
+    const send = vi.fn().mockRejectedValue(new Error('discord API error'))
     const thread: DiscordThread = {
       send,
       sendTyping: vi.fn(),
@@ -124,30 +119,34 @@ describe('runLogSyncCycle', () => {
     const line =
       JSON.stringify({
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'retry me' }] },
+        message: { content: [{ type: 'text', text: 'always fails' }] },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
-    await waitFor(() => callCount >= 1)
-    let row = db
-      .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
-      .get('session-1') as {
-      jsonl_offset: number
-    }
-    expect(row.jsonl_offset).toBe(0)
-
-    // A no-op append still triggers a change event on most platforms and
-    // forces the tailer to retry the same unconfirmed batch.
-    writeFileSync(jsonlPath, line)
-    await waitFor(() => callCount >= 2, 5000)
     await waitFor(() => {
-      row = db
+      const row = db
         .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
-        .get('session-1') as {
-        jsonl_offset: number
-      }
+        .get('session-1') as { jsonl_offset: number }
       return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
     })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalled()
+
+    // The failure on the earlier line must not have permanently wedged the
+    // tailer: a later line is still processed normally.
+    send.mockResolvedValue(undefined)
+    const nextLine =
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'next line' }] },
+      }) + '\n'
+    writeFileSync(jsonlPath, line + nextLine)
+    await waitFor(() =>
+      send.mock.calls.some(
+        (call) => (call[0] as { content?: string }).content === 'next line'
+      )
+    )
+
     errorSpy.mockRestore()
     db.close()
   })
@@ -192,17 +191,14 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
-  it('does not repost an earlier line in a retried multi-line batch after a later line fails', async () => {
+  it('continues processing subsequent lines in the same batch after an earlier line fails to post', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
     insertSession(db, makeSession({ jsonlPath }))
-    let callCount = 0
-    const send = vi.fn().mockImplementation(() => {
-      callCount += 1
-      // The 2nd call (posting the 2nd line's content) fails on the first
-      // attempt, but succeeds afterwards. The 1st call (1st line) always
-      // succeeds.
-      if (callCount === 2) return Promise.reject(new Error('discord API error'))
+    const send = vi.fn().mockImplementation((input: { content?: string }) => {
+      if (input.content === 'first line') {
+        return Promise.reject(new Error('discord API error'))
+      }
       return Promise.resolve(undefined)
     })
     const thread: DiscordThread = {
@@ -233,44 +229,17 @@ describe('runLogSyncCycle', () => {
     const batch = line1 + line2
     writeFileSync(jsonlPath, batch)
 
-    // Wait for both lines to have been attempted once (1st succeeds, 2nd
-    // rejects), which fails the whole onLines batch and leaves jsonl_offset
-    // stuck at the offset after line1 (since that UPDATE already committed
-    // before line2 threw).
-    await waitFor(() => callCount >= 2)
+    // Both lines are processed in the same batch: the 1st fails and is
+    // skipped, the 2nd still succeeds — the failure does not stop the batch.
     await waitFor(() => {
       const row = db
         .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
-        .get('session-1') as {
-        jsonl_offset: number
-      }
-      return row.jsonl_offset === Buffer.byteLength(line1, 'utf8')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(batch, 'utf8')
     })
     expect(send).toHaveBeenCalledTimes(2)
     expect(send).toHaveBeenNthCalledWith(1, { content: 'first line' })
-
-    // A no-op append still triggers a change event on most platforms and
-    // forces the tailer to retry the same unconfirmed batch (both lines,
-    // since the tailer's in-memory offset never advanced past the batch
-    // start).
-    writeFileSync(jsonlPath, batch)
-    await waitFor(() => {
-      const row = db
-        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
-        .get('session-1') as {
-        jsonl_offset: number
-      }
-      return row.jsonl_offset === Buffer.byteLength(batch, 'utf8')
-    }, 5000)
-
-    // The 1st line must not have been reposted: only the original call to
-    // send its content, plus exactly one more call (the retried 2nd line).
-    expect(send).toHaveBeenCalledTimes(3)
-    expect(send).toHaveBeenNthCalledWith(3, { content: 'second line' })
-    const firstLineCalls = send.mock.calls.filter(
-      (call) => (call[0] as { content?: string }).content === 'first line'
-    )
-    expect(firstLineCalls).toHaveLength(1)
+    expect(send).toHaveBeenNthCalledWith(2, { content: 'second line' })
 
     errorSpy.mockRestore()
     db.close()
@@ -305,7 +274,7 @@ describe('runLogSyncCycle', () => {
     db.close()
   })
 
-  it('does not lose or duplicate an echo when a later block in the same line fails and retries', async () => {
+  it('does not consume an input_queue echo entry when the line containing it fails to post', async () => {
     const db = openRegistryDb(':memory:')
     writeFileSync(jsonlPath, '')
     insertSession(db, makeSession({ jsonlPath }))
@@ -313,14 +282,7 @@ describe('runLogSyncCycle', () => {
       `INSERT INTO input_queue (session_id, source, body, state, created_at)
        VALUES ('session-1', 'user-1', 'from discord', 'sent', 1)`
     ).run()
-    let callCount = 0
-    const send = vi.fn().mockImplementation(() => {
-      callCount += 1
-      // The 2nd content block's post (the non-echo text) fails on the first
-      // attempt, but succeeds afterwards.
-      if (callCount === 1) return Promise.reject(new Error('discord API error'))
-      return Promise.resolve(undefined)
-    })
+    const send = vi.fn().mockRejectedValue(new Error('discord API error'))
     const thread: DiscordThread = {
       send,
       sendTyping: vi.fn(),
@@ -348,42 +310,22 @@ describe('runLogSyncCycle', () => {
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
-    // First attempt: the echo block is suppressed (not sent), so the only
-    // `send` call is for the non-echo block, which fails. jsonl_offset must
-    // not advance.
-    await waitFor(() => callCount >= 1)
-    const row = db
-      .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
-      .get('session-1') as {
-      jsonl_offset: number
-    }
-    expect(row.jsonl_offset).toBe(0)
-
-    // A no-op append still triggers a change event on most platforms and
-    // forces the tailer to retry the same unconfirmed line.
-    writeFileSync(jsonlPath, line)
     await waitFor(() => {
-      const retriedRow = db
+      const row = db
         .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
         .get('session-1') as { jsonl_offset: number }
-      return retriedRow.jsonl_offset === Buffer.byteLength(line, 'utf8')
-    }, 5000)
-
-    // The echoed block must never have been sent, on either the failed
-    // first attempt or the successful retry: if the echo-consumed marker
-    // were (incorrectly) recorded before the line's post fully succeeded,
-    // the retry would re-evaluate `isEcho('from discord')` as `false` and
-    // post it as a duplicate.
-    const echoCalls = send.mock.calls.filter(
-      (call) => (call[0] as { content?: string }).content === 'from discord'
-    )
-    expect(echoCalls).toHaveLength(0)
-    // The non-echo block is attempted on both the failed first try and the
-    // successful retry (2 `send` calls total: 1 rejection + 1 success) —
-    // this is a single logical post that failed once and succeeded once,
-    // not a duplicate post to Discord.
-    expect(callCount).toBe(2)
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    // The echoed block is suppressed at format stage (never sent); only the
+    // non-echo block is attempted, and it fails once.
+    expect(send).toHaveBeenCalledTimes(1)
     expect(send).toHaveBeenCalledWith({ content: 'not an echo' })
+    // The input_queue row must remain unconsumed: the line's post failed and
+    // was skipped rather than successfully reflected in Discord.
+    const inputQueueRow = db
+      .prepare(`SELECT state FROM input_queue WHERE session_id = 'session-1'`)
+      .get() as { state: string }
+    expect(inputQueueRow.state).toBe('sent')
 
     errorSpy.mockRestore()
     db.close()

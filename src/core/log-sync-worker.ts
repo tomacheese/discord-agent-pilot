@@ -235,7 +235,19 @@ async function processLine(
             pendingConsumedIds
           )
         )
-  await postItems(thread, items)
+  try {
+    await postItems(thread, items)
+  } catch (error) {
+    // A line whose post keeps failing (e.g. Discord rejects the message
+    // body) must not block the tailer forever: skip it and advance past
+    // it instead of retrying indefinitely. See Issue #23.
+    console.error(
+      `Failed to post line for session ${session.id}; skipping line:`,
+      error
+    )
+    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    return
+  }
   // Only merge matched echo IDs into the shared set once the whole line's
   // post has succeeded — see the doc comment on makeEchoMatcher.
   for (const id of pendingConsumedIds) {
