@@ -188,10 +188,23 @@ export async function findLatestJsonlForSessionId(
   const matches = await Promise.all(
     projectDirectoryNames.map(async (directoryName) => {
       const directory = path.join(projectsRoot, directoryName)
-      const files = await readdirIfExists(directory)
-      return files.includes(targetFile)
-        ? path.join(directory, targetFile)
-        : undefined
+      try {
+        const files = await readdirIfExists(directory)
+        return files.includes(targetFile)
+          ? path.join(directory, targetFile)
+          : undefined
+      } catch (error) {
+        // `readdirIfExists` only swallows ENOENT; other errors (e.g.
+        // ENOTDIR if `directoryName` is not actually a directory, or EACCES)
+        // would otherwise reject this whole Promise.all and abort jsonlPath
+        // reconciliation for this session even though other, unaffected
+        // candidates may exist elsewhere. Exclude this directory instead.
+        console.error(
+          `Failed to read directory ${directory} while searching for latest jsonlPath, excluding it:`,
+          error
+        )
+        return undefined
+      }
     })
   )
   const candidates = matches.filter(

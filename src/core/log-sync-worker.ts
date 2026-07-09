@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import path from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { parseJsonlLine } from '../claude-log/parse'
 import {
   formatAssistantEntry,
@@ -221,18 +221,29 @@ function recordPathOffset(
 }
 
 /**
+ * Only the last `TAIL_CHUNK_BYTES` of a file are read when searching for a
+ * safe line-boundary offset (see `computeSeedOffsetForNewPath`) — reading
+ * the whole file would risk a large allocation and unnecessary I/O for a
+ * long-lived JSONL log during a path switch.
+ */
+const TAIL_CHUNK_BYTES = 64 * 1024
+
+/**
  * Computes a safe starting offset for tailing `filePath` the first time this
  * session uses it: rather than seeding from the file's raw current byte
  * size (`stat().size`), which can land strictly inside a JSON line that is
  * still being written (a multi-write flush in progress) and cause the
- * tailer to treat that fragment as a complete line, this reads the file's
- * current content and rounds the offset DOWN to the last complete line
- * boundary — the byte index right after the last `\n` at or before the end
- * of the read content. Any trailing partial line is left for the tailer to
- * pick up naturally once its `\n` is actually written.
+ * tailer to treat that fragment as a complete line, this reads only the
+ * file's last `TAIL_CHUNK_BYTES` and rounds the offset DOWN to the last
+ * complete line boundary within that chunk — the byte index right after the
+ * last `\n` found. Any trailing partial line is left for the tailer to pick
+ * up naturally once its `\n` is actually written.
  *
- * Returns `0` if the file has no `\n` at all (empty, or a single incomplete
- * line), and falls back to `0` (with the error logged) if the file cannot
+ * Returns `0` if no `\n` is found within the read chunk (the file is empty,
+ * a single incomplete line, or — in the rare case of a file larger than
+ * `TAIL_CHUNK_BYTES` with no newline anywhere in its final chunk — falls
+ * back conservatively rather than guessing a boundary beyond what was
+ * read). Also falls back to `0` (with the error logged) if the file cannot
  * be read at all — e.g. a TOCTOU race where it vanished between resolution
  * and this read.
  */
@@ -241,12 +252,23 @@ async function computeSeedOffsetForNewPath(
   sessionId: string
 ): Promise<number> {
   try {
-    const content = await readFile(filePath)
-    const lastNewlineIndex = content.lastIndexOf('\n')
-    return lastNewlineIndex === -1 ? 0 : lastNewlineIndex + 1
+    const handle = await open(filePath, 'r')
+    try {
+      const { size } = await handle.stat()
+      const readLength = Math.min(size, TAIL_CHUNK_BYTES)
+      const startPosition = size - readLength
+      const buffer = Buffer.alloc(readLength)
+      await handle.read(buffer, 0, readLength, startPosition)
+      const lastNewlineIndexInChunk = buffer.lastIndexOf(0x0a)
+      return lastNewlineIndexInChunk === -1
+        ? 0
+        : startPosition + lastNewlineIndexInChunk + 1
+    } finally {
+      await handle.close()
+    }
   } catch (error) {
     console.error(
-      `Failed to stat new jsonlPath for session ${sessionId}, falling back to offset 0:`,
+      `Failed to read new jsonlPath for session ${sessionId}, falling back to offset 0:`,
       error
     )
     return 0
