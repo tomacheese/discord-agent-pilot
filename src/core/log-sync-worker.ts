@@ -210,7 +210,21 @@ async function processLine(
     const candidateTitle =
       parsed.kind === 'agent-name' ? parsed.agentName : parsed.aiTitle
     if (shouldApplyThreadName(session.threadNameSource, candidateSource)) {
-      await thread.setName(truncateThreadTitle(candidateTitle))
+      try {
+        await thread.setName(truncateThreadTitle(candidateTitle))
+      } catch (error) {
+        // A persistently failing Discord rename must not block the tailer
+        // forever: skip it and advance past this line instead of retrying
+        // indefinitely. See Issue #23. Only the Discord call is caught here
+        // (not the DB update below) so a DB failure surfaces as itself
+        // instead of being misreported as a rename failure.
+        console.error(
+          `Failed to set thread name for session ${session.id}; skipping:`,
+          error
+        )
+        updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+        return
+      }
       updateThreadNameSource(dependencies.db, session.id, candidateSource)
       // Keep the in-memory session object (captured for this tailer's whole
       // lifetime) in sync with what was just persisted, so a later line in
@@ -235,7 +249,19 @@ async function processLine(
             pendingConsumedIds
           )
         )
-  await postItems(thread, items)
+  try {
+    await postItems(thread, items)
+  } catch (error) {
+    // A line whose post keeps failing (e.g. Discord rejects the message
+    // body) must not block the tailer forever: skip it and advance past
+    // it instead of retrying indefinitely. See Issue #23.
+    console.error(
+      `Failed to post line for session ${session.id}; skipping line:`,
+      error
+    )
+    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    return
+  }
   // Only merge matched echo IDs into the shared set once the whole line's
   // post has succeeded — see the doc comment on makeEchoMatcher.
   for (const id of pendingConsumedIds) {
