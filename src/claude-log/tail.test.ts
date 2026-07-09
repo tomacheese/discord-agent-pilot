@@ -186,6 +186,37 @@ describe('createJsonlTailer', () => {
     expect(received[0]).toEqual([{ text: '{"a":1}', offsetAfter: 8 }])
   })
 
+  it('flush() drains a pending complete line without waiting for a poll/watch cycle, and getOffset() reflects it', async () => {
+    writeFileSync(filePath, '')
+    const received: TailedLine[][] = []
+    const tailer = createJsonlTailer(
+      filePath,
+      0,
+      (lines) => {
+        received.push(lines)
+        return Promise.resolve()
+      },
+      // A long poll interval: if flush() relied on the next poll tick this
+      // test would time out, proving flush() truly runs its own cycle.
+      60_000
+    )
+    tailer.start()
+    await tailer.flush()
+    expect(received).toEqual([])
+    expect(tailer.getOffset()).toBe(0)
+
+    // Append directly (bypassing fs.watch/polling reliance) and flush.
+    appendFileSync(filePath, '{"a":1}\n{"a":2}\n')
+    await tailer.flush()
+    tailer.stop()
+
+    expect(received.flat()).toEqual([
+      { text: '{"a":1}', offsetAfter: 8 },
+      { text: '{"a":2}', offsetAfter: 16 },
+    ])
+    expect(tailer.getOffset()).toBe(16)
+  })
+
   it('falls back to polling and still detects new lines after fs.watch emits an error event', async () => {
     writeFileSync(filePath, '')
     const watchMock = vi.mocked(fsModule.watch)

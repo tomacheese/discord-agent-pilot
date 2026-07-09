@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -586,5 +587,524 @@ describe('runLogSyncCycle', () => {
     await waitFor(() => setName.mock.calls.length > 0)
     expect(setName).toHaveBeenCalledWith('auth-refactor')
     db.close()
+  })
+
+  describe('jsonlPath reconciliation', () => {
+    let configDirectory: string
+    let projectsRoot: string
+
+    beforeEach(async () => {
+      configDirectory = mkdtempSync(path.join(tmpdir(), 'config-dir-'))
+      projectsRoot = path.join(configDirectory, 'projects')
+      await mkdir(projectsRoot, { recursive: true })
+    })
+
+    afterEach(async () => {
+      await rm(configDirectory, { recursive: true, force: true })
+    })
+
+    it('switches to the newer jsonl file discovered under a different project directory and resets the offset', async () => {
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+      const newFile = path.join(newDirectory, 'session-1.jsonl')
+      writeFileSync(oldFile, '')
+      writeFileSync(newFile, '')
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(oldFile, older, older)
+      await utimes(newFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          jsonlPath: oldFile,
+          jsonlOffset: 999,
+          configDir: configDirectory,
+        })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      await runLogSyncCycle(dependencies)
+
+      const row = db
+        .prepare(
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      expect(row.jsonlPath).toBe(newFile)
+      expect(row.jsonlOffset).toBe(0)
+
+      const line =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'from new file' }] },
+        }) + '\n'
+      writeFileSync(newFile, line)
+
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({ content: 'from new file' })
+      db.close()
+    })
+
+    it('seeds the offset from the target file size when switching back to a pre-existing, non-empty file, and only posts newly appended content', async () => {
+      const worktreeDirectory = path.join(projectsRoot, 'worktree-project')
+      const originalDirectory = path.join(projectsRoot, 'original-project')
+      await mkdir(worktreeDirectory, { recursive: true })
+      await mkdir(originalDirectory, { recursive: true })
+      const worktreeFile = path.join(worktreeDirectory, 'session-1.jsonl')
+      const originalFile = path.join(originalDirectory, 'session-1.jsonl')
+
+      // originalFile already has historical content that was presumably
+      // synced to Discord in an earlier stretch of the same session, before
+      // the process entered the worktree.
+      const historicalLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'historical content' }] },
+        }) + '\n'
+      writeFileSync(originalFile, historicalLine)
+      writeFileSync(worktreeFile, '')
+
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      // worktreeFile is currently the session's active jsonlPath (newer mtime
+      // than originalFile), simulating that the process is inside the
+      // worktree right now.
+      await utimes(originalFile, older, older)
+      await utimes(worktreeFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          jsonlPath: worktreeFile,
+          jsonlOffset: 0,
+          configDir: configDirectory,
+        })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // Process exits the worktree: originalFile now becomes the newest
+      // (mtime-wise) again, so the next cycle switches back to it.
+      const newest = new Date('2026-01-03T00:00:00Z')
+      await utimes(originalFile, newest, newest)
+
+      await runLogSyncCycle(dependencies)
+
+      const expectedOffset = Buffer.byteLength(historicalLine, 'utf8')
+      const row = db
+        .prepare(
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      expect(row.jsonlPath).toBe(originalFile)
+      expect(row.jsonlOffset).toBe(expectedOffset)
+
+      // No new content has been appended yet: the historical line must NOT
+      // be re-posted.
+      expect(send).not.toHaveBeenCalled()
+
+      const newLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'new content after switch back' }],
+          },
+        }) + '\n'
+      writeFileSync(originalFile, historicalLine + newLine)
+
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({
+        content: 'new content after switch back',
+      })
+      expect(send).not.toHaveBeenCalledWith({ content: 'historical content' })
+      db.close()
+    })
+
+    it('skips jsonlPath re-resolution within the hysteresis window after a switch, then re-checks once it elapses', async () => {
+      vi.useFakeTimers()
+      try {
+        const oldDirectory = path.join(projectsRoot, 'old-project')
+        const newDirectory = path.join(projectsRoot, 'new-project')
+        await mkdir(oldDirectory, { recursive: true })
+        await mkdir(newDirectory, { recursive: true })
+        const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+        const newFile = path.join(newDirectory, 'session-1.jsonl')
+        writeFileSync(oldFile, '')
+        writeFileSync(newFile, '')
+        const older = new Date('2026-01-01T00:00:00Z')
+        const newer = new Date('2026-01-02T00:00:00Z')
+        await utimes(oldFile, older, older)
+        await utimes(newFile, newer, newer)
+
+        const db = openRegistryDb(':memory:')
+        insertSession(
+          db,
+          makeSession({ jsonlPath: oldFile, configDir: configDirectory })
+        )
+        const thread: DiscordThread = {
+          send: vi.fn().mockResolvedValue(undefined),
+          sendTyping: vi.fn().mockResolvedValue(undefined),
+          setName: vi.fn().mockResolvedValue(undefined),
+        }
+        const dependencies: LogSyncDependencies = {
+          db,
+          getThread: () => Promise.resolve(thread),
+          pollIntervalMs: 50,
+        }
+
+        await runLogSyncCycle(dependencies)
+        let row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(newFile)
+
+        // A third location appears right after the switch, within the
+        // hysteresis window: reconciliation must NOT jump to it yet.
+        const thirdDirectory = path.join(projectsRoot, 'third-project')
+        await mkdir(thirdDirectory, { recursive: true })
+        const thirdFile = path.join(thirdDirectory, 'session-1.jsonl')
+        writeFileSync(thirdFile, '')
+        const newest = new Date('2026-01-03T00:00:00Z')
+        await utimes(thirdFile, newest, newest)
+
+        vi.advanceTimersByTime(5000) // still within HYSTERESIS_MS (10s)
+        await runLogSyncCycle(dependencies)
+        row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(newFile) // unchanged: still within hysteresis
+
+        vi.advanceTimersByTime(6000) // now past HYSTERESIS_MS since the first switch
+        await runLogSyncCycle(dependencies)
+        row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(thirdFile) // now switches
+
+        db.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('continues reconciling other sessions when one session fails to resolve its jsonlPath', async () => {
+      const errorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+
+      // "session-bad": configDirectory points at a plain file, not a directory,
+      // so readdir(path.join(configDirectory, 'projects')) throws ENOTDIR rather
+      // than the ENOENT that readdirIfExists tolerates.
+      const badConfigDirectory = path.join(
+        projectsRoot,
+        '..',
+        'not-a-directory'
+      )
+      writeFileSync(badConfigDirectory, '')
+
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-good.jsonl')
+      const newFile = path.join(newDirectory, 'session-good.jsonl')
+      writeFileSync(oldFile, '')
+      writeFileSync(newFile, '')
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(oldFile, older, older)
+      await utimes(newFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          id: 'session-bad',
+          jsonlPath: path.join(configDirectory, 'irrelevant.jsonl'),
+          configDir: badConfigDirectory,
+        })
+      )
+      insertSession(
+        db,
+        makeSession({
+          id: 'session-good',
+          jsonlPath: oldFile,
+          configDir: configDirectory,
+        })
+      )
+      const thread: DiscordThread = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      await runLogSyncCycle(dependencies)
+
+      expect(errorSpy).toHaveBeenCalled()
+      const row = db
+        .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+        .get('session-good') as { jsonlPath: string }
+      expect(row.jsonlPath).toBe(newFile)
+
+      db.close()
+      errorSpy.mockRestore()
+    })
+
+    it('waits for a stale in-flight write from a superseded tailer to drain (via flush()) before completing the jsonlPath switch', async () => {
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+      const newFile = path.join(newDirectory, 'session-1.jsonl')
+
+      const oldLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'from old file' }] },
+        }) + '\n'
+      writeFileSync(oldFile, oldLine)
+      const older = new Date('2026-01-01T00:00:00Z')
+      await utimes(oldFile, older, older)
+      // newFile does not exist yet: on the first cycle it must not be a
+      // reconciliation candidate at all, so the old tailer actually starts
+      // and reads the pre-existing line. It is created only after the first
+      // cycle, right before the switch-detecting second cycle.
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({ jsonlPath: oldFile, configDir: configDirectory })
+      )
+
+      // Controls when the old tailer's in-flight `thread.send()` resolves,
+      // so the test can force the jsonlPath switch to happen while that
+      // call is still pending (simulating a slow Discord API call racing
+      // against the switch detection).
+      const { promise: oldSendGate, resolve: releaseOldSend } =
+        Promise.withResolvers<undefined>()
+      let hasSendCompleted = false
+      const send = vi.fn().mockImplementation(async () => {
+        await oldSendGate
+        hasSendCompleted = true
+      })
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // First cycle: starts the old tailer. Its fs.watch-triggered internal
+      // check() reads the pre-existing line and calls onLines -> processLine
+      // -> thread.send(), which hangs on oldSendGate. runLogSyncCycle itself
+      // does not wait for this (tail.ts's check() is fire-and-forget), so
+      // this call returns immediately.
+      await runLogSyncCycle(dependencies)
+      await waitFor(() => send.mock.calls.length > 0)
+
+      // newFile appears only now, with a newer mtime than oldFile, so the
+      // next cycle's reconciliation detects it as the switch target.
+      writeFileSync(newFile, '')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(newFile, newer, newer)
+
+      // Second cycle detects the switch to newFile, but `reconcileJsonlPaths`
+      // now awaits `tailer.flush()` on the old tailer before stopping it and
+      // completing the switch — so this call blocks until the old tailer's
+      // pending send resolves. Start it without awaiting immediately so the
+      // test can release the gate afterwards.
+      const secondCyclePromise = runLogSyncCycle(dependencies)
+
+      // Give the switch-detecting cycle a moment to actually start awaiting
+      // `flush()`, confirming it really does block on the pending send
+      // rather than completing immediately.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(hasSendCompleted).toBe(false)
+
+      // Release the old tailer's stale in-flight write. `flush()` drains it
+      // (advancing the old tailer's internal offset past it and persisting
+      // it via the normal `updateJsonlOffset` write, guarded to the OLD
+      // jsonlPath), after which the switch to newFile completes.
+      releaseOldSend(undefined)
+      await waitFor(() => hasSendCompleted)
+      await secondCyclePromise
+
+      const row = db
+        .prepare(
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      // The switch only completes after the old write drained, so the final
+      // state cleanly reflects the new file with a freshly-seeded offset —
+      // no stale write can land after the switch and clobber it.
+      expect(row.jsonlPath).toBe(newFile)
+      expect(row.jsonlOffset).toBe(0)
+
+      db.close()
+    })
+
+    it('does not drop trailing unread bytes across a worktree round-trip: content on A written but unread before switching to B is posted, and not duplicated once switched back to A', async () => {
+      const directoryA = path.join(projectsRoot, 'project-a')
+      const directoryB = path.join(projectsRoot, 'project-b')
+      await mkdir(directoryA, { recursive: true })
+      await mkdir(directoryB, { recursive: true })
+      const fileA = path.join(directoryA, 'session-1.jsonl')
+      const fileB = path.join(directoryB, 'session-1.jsonl')
+
+      const line1 =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'a-line-1' }] },
+        }) + '\n'
+      const line2 =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'a-line-2-trailing' }] },
+        }) + '\n'
+      const line3 =
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'a-line-3-after-return' }],
+          },
+        }) + '\n'
+
+      writeFileSync(fileA, line1)
+      const t1 = new Date('2026-01-01T00:00:00Z')
+      await utimes(fileA, t1, t1)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({ jsonlPath: fileA, configDir: configDirectory })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // First cycle: no fileB yet, so fileA is the only candidate and no
+      // switch happens; the tailer for fileA starts and (via real fs.watch)
+      // reads and posts line1.
+      await runLogSyncCycle(dependencies)
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({ content: 'a-line-1' })
+
+      // Append line2 to fileA but do NOT wait for fs.watch to pick it up:
+      // it must remain unread by fileA's running tailer at the moment the
+      // switch to fileB is triggered below, reproducing "trailing unread
+      // bytes at switch-away time".
+      writeFileSync(fileA, line1 + line2)
+      // Re-apply fileA's older mtime: the write above bumped it to "now",
+      // which would otherwise make it look newer than fileB below.
+      await utimes(fileA, t1, t1)
+      writeFileSync(fileB, '')
+      const t2 = new Date('2026-01-02T00:00:00Z')
+      await utimes(fileB, t2, t2)
+
+      // Skip past HYSTERESIS_MS between the two switches below without a
+      // real 10s wait.
+      vi.useFakeTimers()
+      try {
+        // Second cycle detects the switch to fileB. `reconcileJsonlPaths`
+        // flushes fileA's tailer first, which drains line2 (regardless of
+        // whether fs.watch had already picked it up) and posts it — this is
+        // the fix for Finding 5/7: without it, line2 could be silently
+        // skipped forever once fileA's raw byte size already includes it.
+        await runLogSyncCycle(dependencies)
+
+        let row = db
+          .prepare(
+            'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+          )
+          .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+        expect(row.jsonlPath).toBe(fileB)
+        expect(row.jsonlOffset).toBe(0)
+        expect(send).toHaveBeenCalledWith({ content: 'a-line-2-trailing' })
+
+        vi.advanceTimersByTime(11_000) // past HYSTERESIS_MS (10s)
+
+        // Switch back: fileA becomes the newest again.
+        const t3 = new Date('2026-01-03T00:00:00Z')
+        await utimes(fileA, t3, t3)
+
+        await runLogSyncCycle(dependencies)
+
+        row = db
+          .prepare(
+            'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+          )
+          .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+        expect(row.jsonlPath).toBe(fileA)
+        // The round-trip must resume from the offset this session already
+        // finished reading up to on fileA (line1 + line2), not re-derive it
+        // from fileA's current byte size (which happens to be the same
+        // value here, but for the wrong reason — see the assertion below
+        // that neither line is reposted once tailing resumes).
+        expect(row.jsonlOffset).toBe(Buffer.byteLength(line1 + line2, 'utf8'))
+      } finally {
+        vi.useRealTimers()
+      }
+
+      // Append line3 after switching back to fileA; the newly (re)started
+      // tailer must pick it up via real fs.watch/polling.
+      writeFileSync(fileA, line1 + line2 + line3)
+      await waitFor(() => send.mock.calls.length >= 3)
+      expect(send).toHaveBeenCalledWith({ content: 'a-line-3-after-return' })
+
+      const line1Calls = send.mock.calls.filter(
+        (call) => (call[0] as { content?: string }).content === 'a-line-1'
+      )
+      const line2Calls = send.mock.calls.filter(
+        (call) =>
+          (call[0] as { content?: string }).content === 'a-line-2-trailing'
+      )
+      expect(line1Calls).toHaveLength(1)
+      expect(line2Calls).toHaveLength(1)
+
+      db.close()
+    })
   })
 })

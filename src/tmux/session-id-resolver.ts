@@ -158,6 +158,83 @@ async function findJsonlBySessionId(
   return matches.find((match) => match !== undefined)
 }
 
+/**
+ * Finds every file literally named `<sessionId>.jsonl` across every
+ * directory directly under `projectsRoot`, and returns the path of the one
+ * with the most recent `mtime` — the file the Claude Code process is
+ * currently writing to. Every candidate (including a sole one) is `stat()`ed
+ * and filtered before being considered, so a broken/dangling candidate (e.g.
+ * a broken symlink) is never returned even when it is the only match.
+ * Returns `undefined` if no candidate exists anywhere, or if every candidate
+ * fails its `stat()` call.
+ *
+ * Unlike `findJsonlBySessionId`, this does NOT check a cwd-derived
+ * directory as a fast path first: right after a cwd switch (e.g. into a
+ * git worktree), the old directory still has a stale `<sessionId>.jsonl`
+ * left over, and checking it first would always "find" the stale file and
+ * never discover that the process moved to a new one (see Issue #25).
+ *
+ * A candidate whose `stat()` fails (e.g. a broken symlink, or the file
+ * disappearing between the directory listing and the stat call) is
+ * excluded rather than failing the whole lookup; the failure is logged
+ * rather than silently discarded.
+ */
+export async function findLatestJsonlForSessionId(
+  projectsRoot: string,
+  sessionId: string
+): Promise<string | undefined> {
+  const targetFile = `${sessionId}.jsonl`
+  const projectDirectoryNames = await readdirIfExists(projectsRoot)
+  const matches = await Promise.all(
+    projectDirectoryNames.map(async (directoryName) => {
+      const directory = path.join(projectsRoot, directoryName)
+      try {
+        const files = await readdirIfExists(directory)
+        return files.includes(targetFile)
+          ? path.join(directory, targetFile)
+          : undefined
+      } catch (error) {
+        // `readdirIfExists` only swallows ENOENT; other errors (e.g.
+        // ENOTDIR if `directoryName` is not actually a directory, or EACCES)
+        // would otherwise reject this whole Promise.all and abort jsonlPath
+        // reconciliation for this session even though other, unaffected
+        // candidates may exist elsewhere. Exclude this directory instead.
+        console.error(
+          `Failed to read directory ${directory} while searching for latest jsonlPath, excluding it:`,
+          error
+        )
+        return undefined
+      }
+    })
+  )
+  const candidates = matches.filter(
+    (match): match is string => match !== undefined
+  )
+  if (candidates.length === 0) return undefined
+
+  const statResults = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        const stats = await stat(candidate)
+        return { candidate, mtimeMs: stats.mtimeMs }
+      } catch (error) {
+        console.error(
+          `Failed to stat candidate ${candidate} while resolving latest jsonlPath, excluding it:`,
+          error
+        )
+        return undefined
+      }
+    })
+  )
+  const scored = statResults.filter(
+    (entry): entry is { candidate: string; mtimeMs: number } =>
+      entry !== undefined
+  )
+  if (scored.length === 0) return undefined
+  const [latest] = scored.toSorted((a, b) => b.mtimeMs - a.mtimeMs)
+  return latest.candidate
+}
+
 /** Computes the wall-clock time (epoch ms) at which process `pid` started. */
 async function computeProcessStartMs(
   procRoot: string,

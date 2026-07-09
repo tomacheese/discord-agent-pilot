@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3'
+import path from 'node:path'
+import { open } from 'node:fs/promises'
 import { parseJsonlLine } from '../claude-log/parse'
 import {
   formatAssistantEntry,
@@ -7,9 +9,11 @@ import {
 } from '../claude-log/format'
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
 import {
+  updateJsonlPath,
   updateThreadNameSource,
   type ThreadNameSource,
 } from '../registry/sessions'
+import { findLatestJsonlForSessionId } from '../tmux/session-id-resolver'
 import { truncateThreadTitle } from '../discord/thread-title'
 
 /**
@@ -40,6 +44,7 @@ export interface LogSyncDependencies {
 interface SessionRowForSync {
   id: string
   threadId: string
+  configDir: string
   jsonlPath: string
   jsonlOffset: number
   threadNameSource: ThreadNameSource
@@ -55,23 +60,32 @@ interface PendingInputQueueRow {
 function findActiveSessions(db: Database.Database): SessionRowForSync[] {
   return db
     .prepare(
-      `SELECT id, thread_id AS threadId, jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset,
+      `SELECT id, thread_id AS threadId, config_dir AS configDir,
+              jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset,
               thread_name_source AS threadNameSource
        FROM sessions WHERE status != 'closed'`
     )
     .all() as SessionRowForSync[]
 }
 
-/** Persists `offset` as the new `jsonl_offset` for `sessionId`. */
+/**
+ * Persists `offset` as the new `jsonl_offset` for `sessionId`, but only if
+ * `jsonlPath` still matches the session's currently-active JSONL file in
+ * the DB. A mismatch means this session's jsonlPath was switched to a
+ * different file (see `reconcileJsonlPaths`) after the tailer that
+ * produced this write was created — the write becomes a no-op instead of
+ * clobbering the newer tailer's freshly-reset offset with this stale,
+ * superseded file's offset.
+ */
 function updateJsonlOffset(
   db: Database.Database,
   sessionId: string,
+  jsonlPath: string,
   offset: number
 ): void {
-  db.prepare('UPDATE sessions SET jsonl_offset = ? WHERE id = ?').run(
-    offset,
-    sessionId
-  )
+  db.prepare(
+    'UPDATE sessions SET jsonl_offset = ? WHERE id = ? AND jsonl_path = ?'
+  ).run(offset, sessionId, jsonlPath)
 }
 
 /** Reads the currently persisted `jsonl_offset` for `sessionId` from the DB. */
@@ -157,10 +171,21 @@ async function postItems(
   }
 }
 
-/** Per-`LogSyncDependencies` mutable state: running tailers and echo-consumption bookkeeping. */
+/** Per-`LogSyncDependencies` mutable state: running tailers, echo-consumption bookkeeping, and jsonlPath-switch hysteresis. */
 interface WorkerState {
   tailers: Map<string, JsonlTailer>
   consumedInputQueueIds: Set<string>
+  /** Epoch ms of the most recent jsonlPath switch per sessionId, used by `reconcileJsonlPaths` for hysteresis (see `HYSTERESIS_MS`). */
+  lastSwitchAtMs: Map<string, number>
+  /**
+   * Per-session map of jsonlPath -> the last-known offset this session
+   * actually finished reading up to for that path. Recorded whenever a
+   * tailer is drained/stopped (the OLD path) or when a new offset is seeded
+   * for a path (the NEW path), so that a later round-trip back to a
+   * previously-visited path resumes exactly where this session left off
+   * instead of re-deriving (and potentially skipping) content (Issue #25).
+   */
+  pathOffsets: Map<string, Map<string, number>>
 }
 
 const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
@@ -169,11 +194,97 @@ const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
 function getState(dependencies: LogSyncDependencies): WorkerState {
   let state = stateByDependencies.get(dependencies)
   if (!state) {
-    state = { tailers: new Map(), consumedInputQueueIds: new Set() }
+    state = {
+      tailers: new Map(),
+      consumedInputQueueIds: new Set(),
+      lastSwitchAtMs: new Map(),
+      pathOffsets: new Map(),
+    }
     stateByDependencies.set(dependencies, state)
   }
   return state
 }
+
+/** Records `offset` as the last-known synced offset for `(sessionId, jsonlPath)` in `state.pathOffsets`. */
+function recordPathOffset(
+  state: WorkerState,
+  sessionId: string,
+  jsonlPath: string,
+  offset: number
+): void {
+  let byPath = state.pathOffsets.get(sessionId)
+  if (!byPath) {
+    byPath = new Map()
+    state.pathOffsets.set(sessionId, byPath)
+  }
+  byPath.set(jsonlPath, offset)
+}
+
+/**
+ * Only the last `TAIL_CHUNK_BYTES` of a file are read when searching for a
+ * safe line-boundary offset (see `computeSeedOffsetForNewPath`) — reading
+ * the whole file would risk a large allocation and unnecessary I/O for a
+ * long-lived JSONL log during a path switch.
+ */
+const TAIL_CHUNK_BYTES = 64 * 1024
+
+/**
+ * Computes a safe starting offset for tailing `filePath` the first time this
+ * session uses it: rather than seeding from the file's raw current byte
+ * size (`stat().size`), which can land strictly inside a JSON line that is
+ * still being written (a multi-write flush in progress) and cause the
+ * tailer to treat that fragment as a complete line, this reads only the
+ * file's last `TAIL_CHUNK_BYTES` and rounds the offset DOWN to the last
+ * complete line boundary within that chunk — the byte index right after the
+ * last `\n` found. Any trailing partial line is left for the tailer to pick
+ * up naturally once its `\n` is actually written.
+ *
+ * Returns `0` if no `\n` is found within the read chunk (the file is empty,
+ * a single incomplete line, or — in the rare case of a file larger than
+ * `TAIL_CHUNK_BYTES` with no newline anywhere in its final chunk — falls
+ * back conservatively rather than guessing a boundary beyond what was
+ * read). Also falls back to `0` (with the error logged) if the file cannot
+ * be read at all — e.g. a TOCTOU race where it vanished between resolution
+ * and this read.
+ */
+async function computeSeedOffsetForNewPath(
+  filePath: string,
+  sessionId: string
+): Promise<number> {
+  try {
+    const handle = await open(filePath, 'r')
+    try {
+      const { size } = await handle.stat()
+      const readLength = Math.min(size, TAIL_CHUNK_BYTES)
+      const startPosition = size - readLength
+      const buffer = Buffer.alloc(readLength)
+      await handle.read(buffer, 0, readLength, startPosition)
+      const lastNewlineIndexInChunk = buffer.lastIndexOf(0x0a)
+      return lastNewlineIndexInChunk === -1
+        ? 0
+        : startPosition + lastNewlineIndexInChunk + 1
+    } finally {
+      await handle.close()
+    }
+  } catch (error) {
+    console.error(
+      `Failed to read new jsonlPath for session ${sessionId}, falling back to offset 0:`,
+      error
+    )
+    return 0
+  }
+}
+
+/**
+ * Minimum time (ms) between jsonlPath switches for the same session. Right
+ * after a cwd switch, the old file may still receive a few trailing writes
+ * while the new file has already started growing; without this window, the
+ * mtime comparison in `reconcileJsonlPaths` could flip back and forth
+ * between the two for a few cycles. `Date.now()`-based rather than a cycle
+ * counter, so it stays constant regardless of the configured
+ * `pollIntervalMs` (see Issue #25's design doc).
+ */
+const HYSTERESIS_MS = 10_000
 
 /** Numeric priority of each `ThreadNameSource`, used to decide whether a new title may replace the currently-applied one. */
 const SOURCE_RANK: Record<ThreadNameSource, number> = {
@@ -201,7 +312,12 @@ async function processLine(
 ): Promise<void> {
   const parsed = parseJsonlLine(lineText)
   if (!parsed || parsed.kind === 'ignored') {
-    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    updateJsonlOffset(
+      dependencies.db,
+      session.id,
+      session.jsonlPath,
+      offsetAfter
+    )
     return
   }
   if (parsed.kind === 'agent-name' || parsed.kind === 'ai-title') {
@@ -233,7 +349,12 @@ async function processLine(
       // ai-title).
       session.threadNameSource = candidateSource
     }
-    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    updateJsonlOffset(
+      dependencies.db,
+      session.id,
+      session.jsonlPath,
+      offsetAfter
+    )
     return
   }
   const pendingConsumedIds: string[] = []
@@ -267,19 +388,127 @@ async function processLine(
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
   }
-  updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+  updateJsonlOffset(dependencies.db, session.id, session.jsonlPath, offsetAfter)
 }
 
 /**
- * Reconciles the set of running tailers against the currently active
- * (non-`closed`) sessions: starts a tailer for each newly seen session and
- * stops/removes tailers for sessions no longer active.
+ * Re-resolves each active session's jsonlPath by an exact sessionId
+ * filename match under `session.configDir`'s `projects/` directory, and
+ * switches the session (DB row + in-memory `session` object + running
+ * tailer, if any) onto a newly discovered file when the Claude Code
+ * process's write target has moved — e.g. the process's cwd switched into
+ * a git worktree mid-session (see Issue #25).
+ *
+ * Skips a session entirely (no re-resolution) for `HYSTERESIS_MS` after a
+ * switch, to absorb the brief window where the old file may still receive
+ * trailing writes and the mtime comparison could otherwise flip back and
+ * forth between the two files.
+ *
+ * Before stopping the old tailer (if any), `tailer.flush()` is awaited so
+ * any pending trailing bytes already appended to the OLD file are drained
+ * and posted first; the tailer's resulting `getOffset()` is then recorded
+ * into `state.pathOffsets` for `(session.id, session.jsonlPath)`, so no
+ * appended-but-unsynced content is silently lost if this session later
+ * switches back to that same file (e.g. a worktree round-trip).
+ *
+ * The new offset for `latest` is seeded in one of two ways:
+ * - If this session has visited `latest` before (`state.pathOffsets` has an
+ *   entry for `(session.id, latest)` — the round-trip case), that recorded
+ *   offset is reused directly, resuming exactly where this session left
+ *   off on that file with no content skipped or duplicated.
+ * - Otherwise (first time this session has ever used `latest`), the offset
+ *   is computed via `computeSeedOffsetForNewPath`: rather than the file's
+ *   raw current byte size (which can land inside a JSON line still being
+ *   written, mid-flush), it rounds down to the last complete line boundary
+ *   so the tailer never starts mid-line. This still avoids re-posting the
+ *   file's pre-existing historical content as new (Issue #25 review
+ *   finding), without the mid-write race a raw `stat().size` seed would
+ *   have. Any read/stat failure (e.g. a TOCTOU race where `latest` vanished
+ *   between resolution and read) falls back to offset `0`, with the error
+ *   logged.
+ *
+ * The resulting offset (from either source) is also recorded into
+ * `state.pathOffsets` for `(session.id, latest)`, so a later round-trip
+ * back to this exact path benefits the same way.
+ *
+ * Runs one check per session in parallel via `Promise.allSettled`, mirroring
+ * `orchestrator.ts`'s pane-processing pattern: one session's resolution
+ * failure must not block the others in the same cycle.
+ */
+async function reconcileJsonlPaths(
+  dependencies: LogSyncDependencies,
+  state: WorkerState,
+  activeSessions: SessionRowForSync[]
+): Promise<void> {
+  const results = await Promise.allSettled(
+    activeSessions.map(async (session) => {
+      const lastSwitchAt = state.lastSwitchAtMs.get(session.id)
+      if (
+        lastSwitchAt !== undefined &&
+        Date.now() - lastSwitchAt < HYSTERESIS_MS
+      ) {
+        return
+      }
+
+      const projectsRoot = path.join(session.configDir, 'projects')
+      const latest = await findLatestJsonlForSessionId(projectsRoot, session.id)
+      if (latest === undefined || latest === session.jsonlPath) return
+
+      const tailer = state.tailers.get(session.id)
+      if (tailer) {
+        try {
+          await tailer.flush()
+        } finally {
+          try {
+            tailer.stop()
+          } catch (error) {
+            console.error(
+              `Failed to stop tailer for session ${session.id} during jsonlPath switch:`,
+              error
+            )
+          } finally {
+            state.tailers.delete(session.id)
+          }
+        }
+        recordPathOffset(
+          state,
+          session.id,
+          session.jsonlPath,
+          tailer.getOffset()
+        )
+      }
+
+      const rememberedOffset = state.pathOffsets.get(session.id)?.get(latest)
+      const newOffset =
+        rememberedOffset ??
+        (await computeSeedOffsetForNewPath(latest, session.id))
+      recordPathOffset(state, session.id, latest, newOffset)
+      updateJsonlPath(dependencies.db, session.id, latest, newOffset)
+      session.jsonlPath = latest
+      session.jsonlOffset = newOffset
+      state.lastSwitchAtMs.set(session.id, Date.now())
+    })
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const session = activeSessions[index]
+    console.error(
+      `Failed to reconcile jsonlPath for session ${session.id}:`,
+      result.reason
+    )
+  }
+}
+
+/**
+ * Reconciles the set of running tailers against `activeSessions`: starts a
+ * tailer for each newly seen session and stops/removes tailers for
+ * sessions no longer active.
  */
 function reconcileTailers(
   dependencies: LogSyncDependencies,
-  state: WorkerState
+  state: WorkerState,
+  activeSessions: SessionRowForSync[]
 ): void {
-  const activeSessions = findActiveSessions(dependencies.db)
   const activeIds = new Set(activeSessions.map((session) => session.id))
 
   for (const [sessionId, tailer] of state.tailers) {
@@ -332,18 +561,18 @@ function reconcileTailers(
 }
 
 /**
- * Runs one reconcile cycle for the JSONL → Discord sync: starts/stops
- * per-session tailers to match the current `sessions` table, mirroring
- * `runDetectionCycle`'s polling pattern. Intended to be called on an
- * interval (`dependencies.pollIntervalMs`) from `index.ts`.
- *
- * Declared `async` (though `reconcileTailers` itself is synchronous) to
- * match `runDetectionCycle`'s signature and keep the door open for future
- * awaited work here without a breaking signature change.
+ * Runs one reconcile cycle for the JSONL → Discord sync: first re-resolves
+ * each active session's jsonlPath (see `reconcileJsonlPaths`), then
+ * starts/stops per-session tailers to match the current `sessions` table
+ * (see `reconcileTailers`), mirroring `runDetectionCycle`'s polling pattern.
+ * Intended to be called on an interval (`dependencies.pollIntervalMs`) from
+ * `index.ts`.
  */
-// eslint-disable-next-line @typescript-eslint/require-await
 export async function runLogSyncCycle(
   dependencies: LogSyncDependencies
 ): Promise<void> {
-  reconcileTailers(dependencies, getState(dependencies))
+  const state = getState(dependencies)
+  const activeSessions = findActiveSessions(dependencies.db)
+  await reconcileJsonlPaths(dependencies, state, activeSessions)
+  reconcileTailers(dependencies, state, activeSessions)
 }
