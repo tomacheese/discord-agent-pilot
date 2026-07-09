@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -601,5 +602,212 @@ describe('runLogSyncCycle', () => {
     await waitFor(() => setName.mock.calls.length > 0)
     expect(setName).toHaveBeenCalledWith('auth-refactor')
     db.close()
+  })
+
+  describe('jsonlPath reconciliation', () => {
+    let configDirectory: string
+    let projectsRoot: string
+
+    beforeEach(async () => {
+      configDirectory = mkdtempSync(path.join(tmpdir(), 'config-dir-'))
+      projectsRoot = path.join(configDirectory, 'projects')
+      await mkdir(projectsRoot, { recursive: true })
+    })
+
+    afterEach(async () => {
+      await rm(configDirectory, { recursive: true, force: true })
+    })
+
+    it('switches to the newer jsonl file discovered under a different project directory and resets the offset', async () => {
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+      const newFile = path.join(newDirectory, 'session-1.jsonl')
+      writeFileSync(oldFile, '')
+      writeFileSync(newFile, '')
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(oldFile, older, older)
+      await utimes(newFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          jsonlPath: oldFile,
+          jsonlOffset: 999,
+          configDir: configDirectory,
+        })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      await runLogSyncCycle(dependencies)
+
+      const row = db
+        .prepare(
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      expect(row.jsonlPath).toBe(newFile)
+      expect(row.jsonlOffset).toBe(0)
+
+      const line =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'from new file' }] },
+        }) + '\n'
+      writeFileSync(newFile, line)
+
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({ content: 'from new file' })
+      db.close()
+    })
+
+    it('skips jsonlPath re-resolution within the hysteresis window after a switch, then re-checks once it elapses', async () => {
+      vi.useFakeTimers()
+      try {
+        const oldDirectory = path.join(projectsRoot, 'old-project')
+        const newDirectory = path.join(projectsRoot, 'new-project')
+        await mkdir(oldDirectory, { recursive: true })
+        await mkdir(newDirectory, { recursive: true })
+        const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+        const newFile = path.join(newDirectory, 'session-1.jsonl')
+        writeFileSync(oldFile, '')
+        writeFileSync(newFile, '')
+        const older = new Date('2026-01-01T00:00:00Z')
+        const newer = new Date('2026-01-02T00:00:00Z')
+        await utimes(oldFile, older, older)
+        await utimes(newFile, newer, newer)
+
+        const db = openRegistryDb(':memory:')
+        insertSession(
+          db,
+          makeSession({ jsonlPath: oldFile, configDir: configDirectory })
+        )
+        const thread: DiscordThread = {
+          send: vi.fn().mockResolvedValue(undefined),
+          sendTyping: vi.fn().mockResolvedValue(undefined),
+          setName: vi.fn().mockResolvedValue(undefined),
+        }
+        const dependencies: LogSyncDependencies = {
+          db,
+          getThread: () => Promise.resolve(thread),
+          pollIntervalMs: 50,
+        }
+
+        await runLogSyncCycle(dependencies)
+        let row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(newFile)
+
+        // A third location appears right after the switch, within the
+        // hysteresis window: reconciliation must NOT jump to it yet.
+        const thirdDirectory = path.join(projectsRoot, 'third-project')
+        await mkdir(thirdDirectory, { recursive: true })
+        const thirdFile = path.join(thirdDirectory, 'session-1.jsonl')
+        writeFileSync(thirdFile, '')
+        const newest = new Date('2026-01-03T00:00:00Z')
+        await utimes(thirdFile, newest, newest)
+
+        vi.advanceTimersByTime(5000) // still within HYSTERESIS_MS (10s)
+        await runLogSyncCycle(dependencies)
+        row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(newFile) // unchanged: still within hysteresis
+
+        vi.advanceTimersByTime(6000) // now past HYSTERESIS_MS since the first switch
+        await runLogSyncCycle(dependencies)
+        row = db
+          .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+          .get('session-1') as { jsonlPath: string }
+        expect(row.jsonlPath).toBe(thirdFile) // now switches
+
+        db.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('continues reconciling other sessions when one session fails to resolve its jsonlPath', async () => {
+      const errorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+
+      // "session-bad": configDirectory points at a plain file, not a directory,
+      // so readdir(path.join(configDirectory, 'projects')) throws ENOTDIR rather
+      // than the ENOENT that readdirIfExists tolerates.
+      const badConfigDirectory = path.join(
+        projectsRoot,
+        '..',
+        'not-a-directory'
+      )
+      writeFileSync(badConfigDirectory, '')
+
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-good.jsonl')
+      const newFile = path.join(newDirectory, 'session-good.jsonl')
+      writeFileSync(oldFile, '')
+      writeFileSync(newFile, '')
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(oldFile, older, older)
+      await utimes(newFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          id: 'session-bad',
+          jsonlPath: path.join(configDirectory, 'irrelevant.jsonl'),
+          configDir: badConfigDirectory,
+        })
+      )
+      insertSession(
+        db,
+        makeSession({
+          id: 'session-good',
+          jsonlPath: oldFile,
+          configDir: configDirectory,
+        })
+      )
+      const thread: DiscordThread = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      await runLogSyncCycle(dependencies)
+
+      expect(errorSpy).toHaveBeenCalled()
+      const row = db
+        .prepare('SELECT jsonl_path AS jsonlPath FROM sessions WHERE id = ?')
+        .get('session-good') as { jsonlPath: string }
+      expect(row.jsonlPath).toBe(newFile)
+
+      db.close()
+      errorSpy.mockRestore()
+    })
   })
 })

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import path from 'node:path'
 import { parseJsonlLine } from '../claude-log/parse'
 import {
   formatAssistantEntry,
@@ -7,9 +8,11 @@ import {
 } from '../claude-log/format'
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
 import {
+  updateJsonlPath,
   updateThreadNameSource,
   type ThreadNameSource,
 } from '../registry/sessions'
+import { findLatestJsonlForSessionId } from '../tmux/session-id-resolver'
 import { truncateThreadTitle } from '../discord/thread-title'
 
 /**
@@ -40,6 +43,7 @@ export interface LogSyncDependencies {
 interface SessionRowForSync {
   id: string
   threadId: string
+  configDir: string
   jsonlPath: string
   jsonlOffset: number
   threadNameSource: ThreadNameSource
@@ -55,7 +59,8 @@ interface PendingInputQueueRow {
 function findActiveSessions(db: Database.Database): SessionRowForSync[] {
   return db
     .prepare(
-      `SELECT id, thread_id AS threadId, jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset,
+      `SELECT id, thread_id AS threadId, config_dir AS configDir,
+              jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset,
               thread_name_source AS threadNameSource
        FROM sessions WHERE status != 'closed'`
     )
@@ -157,10 +162,12 @@ async function postItems(
   }
 }
 
-/** Per-`LogSyncDependencies` mutable state: running tailers and echo-consumption bookkeeping. */
+/** Per-`LogSyncDependencies` mutable state: running tailers, echo-consumption bookkeeping, and jsonlPath-switch hysteresis. */
 interface WorkerState {
   tailers: Map<string, JsonlTailer>
   consumedInputQueueIds: Set<string>
+  /** Epoch ms of the most recent jsonlPath switch per sessionId, used by `reconcileJsonlPaths` for hysteresis (see `HYSTERESIS_MS`). */
+  lastSwitchAtMs: Map<string, number>
 }
 
 const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
@@ -169,11 +176,26 @@ const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
 function getState(dependencies: LogSyncDependencies): WorkerState {
   let state = stateByDependencies.get(dependencies)
   if (!state) {
-    state = { tailers: new Map(), consumedInputQueueIds: new Set() }
+    state = {
+      tailers: new Map(),
+      consumedInputQueueIds: new Set(),
+      lastSwitchAtMs: new Map(),
+    }
     stateByDependencies.set(dependencies, state)
   }
   return state
 }
+
+/**
+ * Minimum time (ms) between jsonlPath switches for the same session. Right
+ * after a cwd switch, the old file may still receive a few trailing writes
+ * while the new file has already started growing; without this window, the
+ * mtime comparison in `reconcileJsonlPaths` could flip back and forth
+ * between the two for a few cycles. `Date.now()`-based rather than a cycle
+ * counter, so it stays constant regardless of the configured
+ * `pollIntervalMs` (see Issue #25's design doc).
+ */
+const HYSTERESIS_MS = 10_000
 
 /** Numeric priority of each `ThreadNameSource`, used to decide whether a new title may replace the currently-applied one. */
 const SOURCE_RANK: Record<ThreadNameSource, number> = {
@@ -245,15 +267,72 @@ async function processLine(
 }
 
 /**
- * Reconciles the set of running tailers against the currently active
- * (non-`closed`) sessions: starts a tailer for each newly seen session and
- * stops/removes tailers for sessions no longer active.
+ * Re-resolves each active session's jsonlPath by an exact sessionId
+ * filename match under `session.configDir`'s `projects/` directory, and
+ * switches the session (DB row + in-memory `session` object + running
+ * tailer, if any) onto a newly discovered file when the Claude Code
+ * process's write target has moved — e.g. the process's cwd switched into
+ * a git worktree mid-session (see Issue #25).
+ *
+ * Skips a session entirely (no re-resolution) for `HYSTERESIS_MS` after a
+ * switch, to absorb the brief window where the old file may still receive
+ * trailing writes and the mtime comparison could otherwise flip back and
+ * forth between the two files.
+ *
+ * Runs one check per session in parallel via `Promise.allSettled`, mirroring
+ * `orchestrator.ts`'s pane-processing pattern: one session's resolution
+ * failure must not block the others in the same cycle.
+ */
+async function reconcileJsonlPaths(
+  dependencies: LogSyncDependencies,
+  state: WorkerState,
+  activeSessions: SessionRowForSync[]
+): Promise<void> {
+  const results = await Promise.allSettled(
+    activeSessions.map(async (session) => {
+      const lastSwitchAt = state.lastSwitchAtMs.get(session.id)
+      if (
+        lastSwitchAt !== undefined &&
+        Date.now() - lastSwitchAt < HYSTERESIS_MS
+      ) {
+        return
+      }
+
+      const projectsRoot = path.join(session.configDir, 'projects')
+      const latest = await findLatestJsonlForSessionId(projectsRoot, session.id)
+      if (latest === undefined || latest === session.jsonlPath) return
+
+      const tailer = state.tailers.get(session.id)
+      if (tailer) {
+        tailer.stop()
+        state.tailers.delete(session.id)
+      }
+      updateJsonlPath(dependencies.db, session.id, latest)
+      session.jsonlPath = latest
+      session.jsonlOffset = 0
+      state.lastSwitchAtMs.set(session.id, Date.now())
+    })
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const session = activeSessions[index]
+    console.error(
+      `Failed to reconcile jsonlPath for session ${session.id}:`,
+      result.reason
+    )
+  }
+}
+
+/**
+ * Reconciles the set of running tailers against `activeSessions`: starts a
+ * tailer for each newly seen session and stops/removes tailers for
+ * sessions no longer active.
  */
 function reconcileTailers(
   dependencies: LogSyncDependencies,
-  state: WorkerState
+  state: WorkerState,
+  activeSessions: SessionRowForSync[]
 ): void {
-  const activeSessions = findActiveSessions(dependencies.db)
   const activeIds = new Set(activeSessions.map((session) => session.id))
 
   for (const [sessionId, tailer] of state.tailers) {
@@ -306,18 +385,18 @@ function reconcileTailers(
 }
 
 /**
- * Runs one reconcile cycle for the JSONL → Discord sync: starts/stops
- * per-session tailers to match the current `sessions` table, mirroring
- * `runDetectionCycle`'s polling pattern. Intended to be called on an
- * interval (`dependencies.pollIntervalMs`) from `index.ts`.
- *
- * Declared `async` (though `reconcileTailers` itself is synchronous) to
- * match `runDetectionCycle`'s signature and keep the door open for future
- * awaited work here without a breaking signature change.
+ * Runs one reconcile cycle for the JSONL → Discord sync: first re-resolves
+ * each active session's jsonlPath (see `reconcileJsonlPaths`), then
+ * starts/stops per-session tailers to match the current `sessions` table
+ * (see `reconcileTailers`), mirroring `runDetectionCycle`'s polling pattern.
+ * Intended to be called on an interval (`dependencies.pollIntervalMs`) from
+ * `index.ts`.
  */
-// eslint-disable-next-line @typescript-eslint/require-await
 export async function runLogSyncCycle(
   dependencies: LogSyncDependencies
 ): Promise<void> {
-  reconcileTailers(dependencies, getState(dependencies))
+  const state = getState(dependencies)
+  const activeSessions = findActiveSessions(dependencies.db)
+  await reconcileJsonlPaths(dependencies, state, activeSessions)
+  reconcileTailers(dependencies, state, activeSessions)
 }
