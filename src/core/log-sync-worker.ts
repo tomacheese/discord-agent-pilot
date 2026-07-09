@@ -212,22 +212,26 @@ async function processLine(
     if (shouldApplyThreadName(session.threadNameSource, candidateSource)) {
       try {
         await thread.setName(truncateThreadTitle(candidateTitle))
-        updateThreadNameSource(dependencies.db, session.id, candidateSource)
-        // Keep the in-memory session object (captured for this tailer's whole
-        // lifetime) in sync with what was just persisted, so a later line in
-        // the same tailer does not compare against a stale source and
-        // incorrectly downgrade an already-applied name (e.g. agent-name ->
-        // ai-title).
-        session.threadNameSource = candidateSource
       } catch (error) {
-        // A persistently failing rename must not block the tailer forever:
-        // skip it and advance past this line instead of retrying
-        // indefinitely. See Issue #23.
+        // A persistently failing Discord rename must not block the tailer
+        // forever: skip it and advance past this line instead of retrying
+        // indefinitely. See Issue #23. Only the Discord call is caught here
+        // (not the DB update below) so a DB failure surfaces as itself
+        // instead of being misreported as a rename failure.
         console.error(
           `Failed to set thread name for session ${session.id}; skipping:`,
           error
         )
+        updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+        return
       }
+      updateThreadNameSource(dependencies.db, session.id, candidateSource)
+      // Keep the in-memory session object (captured for this tailer's whole
+      // lifetime) in sync with what was just persisted, so a later line in
+      // the same tailer does not compare against a stale source and
+      // incorrectly downgrade an already-applied name (e.g. agent-name ->
+      // ai-title).
+      session.threadNameSource = candidateSource
     }
     updateJsonlOffset(dependencies.db, session.id, offsetAfter)
     return

@@ -131,7 +131,7 @@ describe('formatAssistantEntry', () => {
     )
   })
 
-  it('truncates a long Edit summary while keeping the added/removed suffix within the limit', () => {
+  it('truncates a long Edit summary while keeping the added/removed suffix intact', () => {
     const longPath = '/tmp/' + 'a'.repeat(3000) + '.ts'
     const result = formatAssistantEntry([
       {
@@ -149,9 +149,11 @@ describe('formatAssistantEntry', () => {
     if (item.kind !== 'messages') throw new Error('expected messages item')
     expect(item.texts).toHaveLength(1)
     expect(item.texts[0].length).toBeLessThanOrEqual(2000)
-    expect(item.texts[0].endsWith('...(以下省略、全文は JSONL 参照)')).toBe(
-      true
-    )
+    // The added/removed suffix must survive truncation, not be cut off
+    // along with the (already-truncated) summary portion.
+    expect(
+      item.texts[0].endsWith('...(以下省略、全文は JSONL 参照) (+1 -1)')
+    ).toBe(true)
   })
 
   it('formats an Edit tool_use as a single header line with added/removed line counts', () => {

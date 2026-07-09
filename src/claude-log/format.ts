@@ -35,14 +35,16 @@ function splitTextIntoMessages(text: string): string[] {
 }
 
 /**
- * Truncates `text` to fit within `MAX_MESSAGE_LENGTH`, appending
- * `TRUNCATION_NOTICE` (itself kept within the limit) when it doesn't
- * already fit.
+ * Truncates `text` to fit `text + suffix` within `MAX_MESSAGE_LENGTH`,
+ * appending `TRUNCATION_NOTICE` before `suffix` when it doesn't already fit.
+ * `suffix` (e.g. an Edit/Write added/removed line count) is always kept
+ * intact rather than being cut off along with `text`.
  */
-function truncateToMessageLimit(text: string): string {
-  if (text.length <= MAX_MESSAGE_LENGTH) return text
-  const limit = MAX_MESSAGE_LENGTH - TRUNCATION_NOTICE.length
-  return text.slice(0, limit) + TRUNCATION_NOTICE
+function truncateToMessageLimit(text: string, suffix = ''): string {
+  const full = text + suffix
+  if (full.length <= MAX_MESSAGE_LENGTH) return full
+  const limit = MAX_MESSAGE_LENGTH - TRUNCATION_NOTICE.length - suffix.length
+  return text.slice(0, Math.max(limit, 0)) + TRUNCATION_NOTICE + suffix
 }
 
 /** Builds a `messages` PostItem from `text`, or returns an empty array for empty text. */
@@ -152,7 +154,7 @@ function formatToolUse(block: {
     return [
       {
         kind: 'messages',
-        texts: [truncateToMessageLimit(`${summary} (+${added} -${removed})`)],
+        texts: [truncateToMessageLimit(summary, ` (+${added} -${removed})`)],
       },
     ]
   }
@@ -163,7 +165,7 @@ function formatToolUse(block: {
     return [
       {
         kind: 'messages',
-        texts: [truncateToMessageLimit(`${summary} (+${added})`)],
+        texts: [truncateToMessageLimit(summary, ` (+${added})`)],
       },
     ]
   }
