@@ -67,16 +67,24 @@ function findActiveSessions(db: Database.Database): SessionRowForSync[] {
     .all() as SessionRowForSync[]
 }
 
-/** Persists `offset` as the new `jsonl_offset` for `sessionId`. */
+/**
+ * Persists `offset` as the new `jsonl_offset` for `sessionId`, but only if
+ * `jsonlPath` still matches the session's currently-active JSONL file in
+ * the DB. A mismatch means this session's jsonlPath was switched to a
+ * different file (see `reconcileJsonlPaths`) after the tailer that
+ * produced this write was created — the write becomes a no-op instead of
+ * clobbering the newer tailer's freshly-reset offset with this stale,
+ * superseded file's offset.
+ */
 function updateJsonlOffset(
   db: Database.Database,
   sessionId: string,
+  jsonlPath: string,
   offset: number
 ): void {
-  db.prepare('UPDATE sessions SET jsonl_offset = ? WHERE id = ?').run(
-    offset,
-    sessionId
-  )
+  db.prepare(
+    'UPDATE sessions SET jsonl_offset = ? WHERE id = ? AND jsonl_path = ?'
+  ).run(offset, sessionId, jsonlPath)
 }
 
 /** Reads the currently persisted `jsonl_offset` for `sessionId` from the DB. */
@@ -223,7 +231,12 @@ async function processLine(
 ): Promise<void> {
   const parsed = parseJsonlLine(lineText)
   if (!parsed || parsed.kind === 'ignored') {
-    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    updateJsonlOffset(
+      dependencies.db,
+      session.id,
+      session.jsonlPath,
+      offsetAfter
+    )
     return
   }
   if (parsed.kind === 'agent-name' || parsed.kind === 'ai-title') {
@@ -241,7 +254,12 @@ async function processLine(
       // ai-title).
       session.threadNameSource = candidateSource
     }
-    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    updateJsonlOffset(
+      dependencies.db,
+      session.id,
+      session.jsonlPath,
+      offsetAfter
+    )
     return
   }
   const pendingConsumedIds: string[] = []
@@ -263,7 +281,7 @@ async function processLine(
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
   }
-  updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+  updateJsonlOffset(dependencies.db, session.id, session.jsonlPath, offsetAfter)
 }
 
 /**

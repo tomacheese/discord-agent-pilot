@@ -809,5 +809,100 @@ describe('runLogSyncCycle', () => {
       db.close()
       errorSpy.mockRestore()
     })
+
+    it('does not let a stale in-flight write from a superseded tailer clobber the freshly-reset offset after a jsonlPath switch', async () => {
+      const oldDirectory = path.join(projectsRoot, 'old-project')
+      const newDirectory = path.join(projectsRoot, 'new-project')
+      await mkdir(oldDirectory, { recursive: true })
+      await mkdir(newDirectory, { recursive: true })
+      const oldFile = path.join(oldDirectory, 'session-1.jsonl')
+      const newFile = path.join(newDirectory, 'session-1.jsonl')
+
+      const oldLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'from old file' }] },
+        }) + '\n'
+      writeFileSync(oldFile, oldLine)
+      const older = new Date('2026-01-01T00:00:00Z')
+      await utimes(oldFile, older, older)
+      // newFile does not exist yet: on the first cycle it must not be a
+      // reconciliation candidate at all, so the old tailer actually starts
+      // and reads the pre-existing line. It is created only after the first
+      // cycle, right before the switch-detecting second cycle.
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({ jsonlPath: oldFile, configDir: configDirectory })
+      )
+
+      // Controls when the old tailer's in-flight `thread.send()` resolves,
+      // so the test can force the jsonlPath switch to happen while that
+      // call is still pending (simulating a slow Discord API call racing
+      // against the switch detection).
+      const { promise: oldSendGate, resolve: releaseOldSend } =
+        Promise.withResolvers<undefined>()
+      let hasSendCompleted = false
+      const send = vi.fn().mockImplementation(async () => {
+        await oldSendGate
+        hasSendCompleted = true
+      })
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // First cycle: starts the old tailer. Its fs.watch-triggered internal
+      // check() reads the pre-existing line and calls onLines -> processLine
+      // -> thread.send(), which hangs on oldSendGate. runLogSyncCycle itself
+      // does not wait for this (tail.ts's check() is fire-and-forget), so
+      // this call returns immediately.
+      await runLogSyncCycle(dependencies)
+      await waitFor(() => send.mock.calls.length > 0)
+
+      // newFile appears only now, with a newer mtime than oldFile, so the
+      // next cycle's reconciliation detects it as the switch target.
+      writeFileSync(newFile, '')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      await utimes(newFile, newer, newer)
+
+      // Second cycle, while the old tailer's send is still pending: detects
+      // the switch to newFile, stops the old tailer, resets jsonl_offset to
+      // 0 in the DB, and starts a new tailer.
+      await runLogSyncCycle(dependencies)
+
+      let row = db
+        .prepare(
+          'SELECT jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlOffset: number }
+      expect(row.jsonlOffset).toBe(0)
+
+      // Let the old tailer's stale in-flight write finish. Without the
+      // jsonlPath guard on updateJsonlOffset, this would clobber
+      // jsonl_offset back to the old file's (much larger) offset.
+      releaseOldSend(undefined)
+      await waitFor(() => hasSendCompleted)
+      // Give the resumed processLine continuation (postItems -> the guarded
+      // updateJsonlOffset write) time to run past the point where it would
+      // have clobbered jsonl_offset, if the guard were absent.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      row = db
+        .prepare(
+          'SELECT jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlOffset: number }
+      expect(row.jsonlOffset).toBe(0)
+
+      db.close()
+    })
   })
 })
