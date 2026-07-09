@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import path from 'node:path'
-import { stat } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { parseJsonlLine } from '../claude-log/parse'
 import {
   formatAssistantEntry,
@@ -177,6 +177,15 @@ interface WorkerState {
   consumedInputQueueIds: Set<string>
   /** Epoch ms of the most recent jsonlPath switch per sessionId, used by `reconcileJsonlPaths` for hysteresis (see `HYSTERESIS_MS`). */
   lastSwitchAtMs: Map<string, number>
+  /**
+   * Per-session map of jsonlPath -> the last-known offset this session
+   * actually finished reading up to for that path. Recorded whenever a
+   * tailer is drained/stopped (the OLD path) or when a new offset is seeded
+   * for a path (the NEW path), so that a later round-trip back to a
+   * previously-visited path resumes exactly where this session left off
+   * instead of re-deriving (and potentially skipping) content (Issue #25).
+   */
+  pathOffsets: Map<string, Map<string, number>>
 }
 
 const stateByDependencies = new WeakMap<LogSyncDependencies, WorkerState>()
@@ -189,10 +198,59 @@ function getState(dependencies: LogSyncDependencies): WorkerState {
       tailers: new Map(),
       consumedInputQueueIds: new Set(),
       lastSwitchAtMs: new Map(),
+      pathOffsets: new Map(),
     }
     stateByDependencies.set(dependencies, state)
   }
   return state
+}
+
+/** Records `offset` as the last-known synced offset for `(sessionId, jsonlPath)` in `state.pathOffsets`. */
+function recordPathOffset(
+  state: WorkerState,
+  sessionId: string,
+  jsonlPath: string,
+  offset: number
+): void {
+  let byPath = state.pathOffsets.get(sessionId)
+  if (!byPath) {
+    byPath = new Map()
+    state.pathOffsets.set(sessionId, byPath)
+  }
+  byPath.set(jsonlPath, offset)
+}
+
+/**
+ * Computes a safe starting offset for tailing `filePath` the first time this
+ * session uses it: rather than seeding from the file's raw current byte
+ * size (`stat().size`), which can land strictly inside a JSON line that is
+ * still being written (a multi-write flush in progress) and cause the
+ * tailer to treat that fragment as a complete line, this reads the file's
+ * current content and rounds the offset DOWN to the last complete line
+ * boundary — the byte index right after the last `\n` at or before the end
+ * of the read content. Any trailing partial line is left for the tailer to
+ * pick up naturally once its `\n` is actually written.
+ *
+ * Returns `0` if the file has no `\n` at all (empty, or a single incomplete
+ * line), and falls back to `0` (with the error logged) if the file cannot
+ * be read at all — e.g. a TOCTOU race where it vanished between resolution
+ * and this read.
+ */
+async function computeSeedOffsetForNewPath(
+  filePath: string,
+  sessionId: string
+): Promise<number> {
+  try {
+    const content = await readFile(filePath)
+    const lastNewlineIndex = content.lastIndexOf('\n')
+    return lastNewlineIndex === -1 ? 0 : lastNewlineIndex + 1
+  } catch (error) {
+    console.error(
+      `Failed to stat new jsonlPath for session ${sessionId}, falling back to offset 0:`,
+      error
+    )
+    return 0
+  }
 }
 
 /**
@@ -298,14 +356,32 @@ async function processLine(
  * trailing writes and the mtime comparison could otherwise flip back and
  * forth between the two files.
  *
- * On a switch, the new offset is seeded from `latest`'s current byte size
- * rather than always `0`: entering a fresh worktree yields an empty file
- * (offset `0`, unchanged from before), but switching back to a pre-existing,
- * already-populated file must start tailing from its current end so the
- * tailer does not re-read and re-post that file's historical content to
- * Discord as if it were new (Issue #25 review finding). If `stat` throws
- * (e.g. a rare TOCTOU race where `latest` vanished between resolution and
- * stat), the offset falls back to `0` and the error is logged.
+ * Before stopping the old tailer (if any), `tailer.flush()` is awaited so
+ * any pending trailing bytes already appended to the OLD file are drained
+ * and posted first; the tailer's resulting `getOffset()` is then recorded
+ * into `state.pathOffsets` for `(session.id, session.jsonlPath)`, so no
+ * appended-but-unsynced content is silently lost if this session later
+ * switches back to that same file (e.g. a worktree round-trip).
+ *
+ * The new offset for `latest` is seeded in one of two ways:
+ * - If this session has visited `latest` before (`state.pathOffsets` has an
+ *   entry for `(session.id, latest)` — the round-trip case), that recorded
+ *   offset is reused directly, resuming exactly where this session left
+ *   off on that file with no content skipped or duplicated.
+ * - Otherwise (first time this session has ever used `latest`), the offset
+ *   is computed via `computeSeedOffsetForNewPath`: rather than the file's
+ *   raw current byte size (which can land inside a JSON line still being
+ *   written, mid-flush), it rounds down to the last complete line boundary
+ *   so the tailer never starts mid-line. This still avoids re-posting the
+ *   file's pre-existing historical content as new (Issue #25 review
+ *   finding), without the mid-write race a raw `stat().size` seed would
+ *   have. Any read/stat failure (e.g. a TOCTOU race where `latest` vanished
+ *   between resolution and read) falls back to offset `0`, with the error
+ *   logged.
+ *
+ * The resulting offset (from either source) is also recorded into
+ * `state.pathOffsets` for `(session.id, latest)`, so a later round-trip
+ * back to this exact path benefits the same way.
  *
  * Runs one check per session in parallel via `Promise.allSettled`, mirroring
  * `orchestrator.ts`'s pane-processing pattern: one session's resolution
@@ -332,19 +408,33 @@ async function reconcileJsonlPaths(
 
       const tailer = state.tailers.get(session.id)
       if (tailer) {
-        tailer.stop()
-        state.tailers.delete(session.id)
-      }
-      let newOffset = 0
-      try {
-        const stats = await stat(latest)
-        newOffset = stats.size
-      } catch (error) {
-        console.error(
-          `Failed to stat new jsonlPath for session ${session.id}, falling back to offset 0:`,
-          error
+        try {
+          await tailer.flush()
+        } finally {
+          try {
+            tailer.stop()
+          } catch (error) {
+            console.error(
+              `Failed to stop tailer for session ${session.id} during jsonlPath switch:`,
+              error
+            )
+          } finally {
+            state.tailers.delete(session.id)
+          }
+        }
+        recordPathOffset(
+          state,
+          session.id,
+          session.jsonlPath,
+          tailer.getOffset()
         )
       }
+
+      const rememberedOffset = state.pathOffsets.get(session.id)?.get(latest)
+      const newOffset =
+        rememberedOffset ??
+        (await computeSeedOffsetForNewPath(latest, session.id))
+      recordPathOffset(state, session.id, latest, newOffset)
       updateJsonlPath(dependencies.db, session.id, latest, newOffset)
       session.jsonlPath = latest
       session.jsonlOffset = newOffset

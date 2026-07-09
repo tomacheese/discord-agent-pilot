@@ -18,6 +18,17 @@ export interface TailedLine {
 export interface JsonlTailer {
   start(): void
   stop(): void
+  /**
+   * Waits for any in-flight read-and-process cycle to finish, then runs one
+   * more cycle if there is anything new to read, advancing the internal
+   * offset exactly as a normal cycle would. Resolves once that final cycle
+   * (success or logged failure) has completed. Used before stopping a
+   * tailer to drain any trailing bytes that were appended but not yet
+   * picked up by `fs.watch`/polling, so they are not silently lost.
+   */
+  flush(): Promise<void>
+  /** Returns the tailer's current internal read offset. */
+  getOffset(): number
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 1000
@@ -75,6 +86,17 @@ export function createJsonlTailer(
     }
   }
 
+  /** A single read-and-process cycle's body: read new lines, report them, then advance `offset`. Shared by `check()` and `flush()`. */
+  async function runCycle(): Promise<void> {
+    if (isStopped) return
+    const lines = readNewLines()
+    if (lines.length === 0) return
+    await onLines(lines)
+    const lastLine = lines.at(-1)
+    if (!lastLine) return
+    offset = lastLine.offsetAfter
+  }
+
   /** Queues a single read-and-report cycle, serialized after any in-flight cycle. */
   function check(): void {
     // `.then()/.catch()` is used deliberately instead of `await` here: this
@@ -85,15 +107,7 @@ export function createJsonlTailer(
     // losing that single shared serialization point.
     processingChain = processingChain
       // eslint-disable-next-line unicorn/prefer-await
-      .then(async () => {
-        if (isStopped) return
-        const lines = readNewLines()
-        if (lines.length === 0) return
-        await onLines(lines)
-        const lastLine = lines.at(-1)
-        if (!lastLine) return
-        offset = lastLine.offsetAfter
-      })
+      .then(runCycle)
       // eslint-disable-next-line unicorn/prefer-await
       .catch((error: unknown) => {
         console.error(`Failed to process tailed lines from ${filePath}:`, error)
@@ -139,6 +153,29 @@ export function createJsonlTailer(
         clearInterval(pollTimer)
         pollTimer = undefined
       }
+    },
+    async flush(): Promise<void> {
+      // Waits for any in-flight cycle on `processingChain` to finish, then
+      // runs exactly one more cycle. Reassigns `processingChain` to this
+      // same promise (the same serialization point `check()` uses) so a
+      // `check()` call racing with this `flush()` still serializes strictly
+      // after it, and only resolves once the extra cycle has completed.
+      const flushChain = (async () => {
+        await processingChain
+        try {
+          await runCycle()
+        } catch (error: unknown) {
+          console.error(
+            `Failed to process tailed lines from ${filePath}:`,
+            error
+          )
+        }
+      })()
+      processingChain = flushChain
+      await flushChain
+    },
+    getOffset(): number {
+      return offset
     },
   }
 }

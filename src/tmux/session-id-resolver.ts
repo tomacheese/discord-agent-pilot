@@ -162,9 +162,11 @@ async function findJsonlBySessionId(
  * Finds every file literally named `<sessionId>.jsonl` across every
  * directory directly under `projectsRoot`, and returns the path of the one
  * with the most recent `mtime` — the file the Claude Code process is
- * currently writing to. Returns the single match directly without a `stat`
- * call when only one candidate exists. Returns `undefined` if no candidate
- * exists anywhere.
+ * currently writing to. Every candidate (including a sole one) is `stat()`ed
+ * and filtered before being considered, so a broken/dangling candidate (e.g.
+ * a broken symlink) is never returned even when it is the only match.
+ * Returns `undefined` if no candidate exists anywhere, or if every candidate
+ * fails its `stat()` call.
  *
  * Unlike `findJsonlBySessionId`, this does NOT check a cwd-derived
  * directory as a fast path first: right after a cwd switch (e.g. into a
@@ -174,7 +176,8 @@ async function findJsonlBySessionId(
  *
  * A candidate whose `stat()` fails (e.g. a broken symlink, or the file
  * disappearing between the directory listing and the stat call) is
- * excluded rather than failing the whole lookup.
+ * excluded rather than failing the whole lookup; the failure is logged
+ * rather than silently discarded.
  */
 export async function findLatestJsonlForSessionId(
   projectsRoot: string,
@@ -195,14 +198,17 @@ export async function findLatestJsonlForSessionId(
     (match): match is string => match !== undefined
   )
   if (candidates.length === 0) return undefined
-  if (candidates.length === 1) return candidates[0]
 
   const statResults = await Promise.all(
     candidates.map(async (candidate) => {
       try {
         const stats = await stat(candidate)
         return { candidate, mtimeMs: stats.mtimeMs }
-      } catch {
+      } catch (error) {
+        console.error(
+          `Failed to stat candidate ${candidate} while resolving latest jsonlPath, excluding it:`,
+          error
+        )
         return undefined
       }
     })

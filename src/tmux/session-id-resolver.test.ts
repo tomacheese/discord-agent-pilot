@@ -484,4 +484,45 @@ describe('findLatestJsonlForSessionId', () => {
 
     expect(result).toBe(okFile)
   })
+
+  it('returns undefined when the sole candidate is a broken symlink (single-candidate path still stats and excludes it)', async () => {
+    await mkdir(path.join(projectsRoot, 'project-broken'))
+    const brokenLink = path.join(
+      projectsRoot,
+      'project-broken',
+      'target-session.jsonl'
+    )
+    await symlink(path.join(projectsRoot, 'does-not-exist'), brokenLink)
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBeUndefined()
+  })
+
+  it('returns undefined when every candidate is a broken symlink (all stat() calls fail)', async () => {
+    await mkdir(path.join(projectsRoot, 'project-broken-a'))
+    await mkdir(path.join(projectsRoot, 'project-broken-b'))
+    const brokenLinkA = path.join(
+      projectsRoot,
+      'project-broken-a',
+      'target-session.jsonl'
+    )
+    const brokenLinkB = path.join(
+      projectsRoot,
+      'project-broken-b',
+      'target-session.jsonl'
+    )
+    await symlink(path.join(projectsRoot, 'does-not-exist-a'), brokenLinkA)
+    await symlink(path.join(projectsRoot, 'does-not-exist-b'), brokenLinkB)
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBeUndefined()
+  })
 })

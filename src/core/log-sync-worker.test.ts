@@ -895,7 +895,7 @@ describe('runLogSyncCycle', () => {
       errorSpy.mockRestore()
     })
 
-    it('does not let a stale in-flight write from a superseded tailer clobber the freshly-reset offset after a jsonlPath switch', async () => {
+    it('waits for a stale in-flight write from a superseded tailer to drain (via flush()) before completing the jsonlPath switch', async () => {
       const oldDirectory = path.join(projectsRoot, 'old-project')
       const newDirectory = path.join(projectsRoot, 'new-project')
       await mkdir(oldDirectory, { recursive: true })
@@ -958,34 +958,166 @@ describe('runLogSyncCycle', () => {
       const newer = new Date('2026-01-02T00:00:00Z')
       await utimes(newFile, newer, newer)
 
-      // Second cycle, while the old tailer's send is still pending: detects
-      // the switch to newFile, stops the old tailer, resets jsonl_offset to
-      // 0 in the DB, and starts a new tailer.
-      await runLogSyncCycle(dependencies)
+      // Second cycle detects the switch to newFile, but `reconcileJsonlPaths`
+      // now awaits `tailer.flush()` on the old tailer before stopping it and
+      // completing the switch — so this call blocks until the old tailer's
+      // pending send resolves. Start it without awaiting immediately so the
+      // test can release the gate afterwards.
+      const secondCyclePromise = runLogSyncCycle(dependencies)
 
-      let row = db
-        .prepare(
-          'SELECT jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
-        )
-        .get('session-1') as { jsonlOffset: number }
-      expect(row.jsonlOffset).toBe(0)
+      // Give the switch-detecting cycle a moment to actually start awaiting
+      // `flush()`, confirming it really does block on the pending send
+      // rather than completing immediately.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(hasSendCompleted).toBe(false)
 
-      // Let the old tailer's stale in-flight write finish. Without the
-      // jsonlPath guard on updateJsonlOffset, this would clobber
-      // jsonl_offset back to the old file's (much larger) offset.
+      // Release the old tailer's stale in-flight write. `flush()` drains it
+      // (advancing the old tailer's internal offset past it and persisting
+      // it via the normal `updateJsonlOffset` write, guarded to the OLD
+      // jsonlPath), after which the switch to newFile completes.
       releaseOldSend(undefined)
       await waitFor(() => hasSendCompleted)
-      // Give the resumed processLine continuation (postItems -> the guarded
-      // updateJsonlOffset write) time to run past the point where it would
-      // have clobbered jsonl_offset, if the guard were absent.
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await secondCyclePromise
 
-      row = db
+      const row = db
         .prepare(
-          'SELECT jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
         )
-        .get('session-1') as { jsonlOffset: number }
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      // The switch only completes after the old write drained, so the final
+      // state cleanly reflects the new file with a freshly-seeded offset —
+      // no stale write can land after the switch and clobber it.
+      expect(row.jsonlPath).toBe(newFile)
       expect(row.jsonlOffset).toBe(0)
+
+      db.close()
+    })
+
+    it('does not drop trailing unread bytes across a worktree round-trip: content on A written but unread before switching to B is posted, and not duplicated once switched back to A', async () => {
+      const directoryA = path.join(projectsRoot, 'project-a')
+      const directoryB = path.join(projectsRoot, 'project-b')
+      await mkdir(directoryA, { recursive: true })
+      await mkdir(directoryB, { recursive: true })
+      const fileA = path.join(directoryA, 'session-1.jsonl')
+      const fileB = path.join(directoryB, 'session-1.jsonl')
+
+      const line1 =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'a-line-1' }] },
+        }) + '\n'
+      const line2 =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'a-line-2-trailing' }] },
+        }) + '\n'
+      const line3 =
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'a-line-3-after-return' }],
+          },
+        }) + '\n'
+
+      writeFileSync(fileA, line1)
+      const t1 = new Date('2026-01-01T00:00:00Z')
+      await utimes(fileA, t1, t1)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({ jsonlPath: fileA, configDir: configDirectory })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // First cycle: no fileB yet, so fileA is the only candidate and no
+      // switch happens; the tailer for fileA starts and (via real fs.watch)
+      // reads and posts line1.
+      await runLogSyncCycle(dependencies)
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({ content: 'a-line-1' })
+
+      // Append line2 to fileA but do NOT wait for fs.watch to pick it up:
+      // it must remain unread by fileA's running tailer at the moment the
+      // switch to fileB is triggered below, reproducing "trailing unread
+      // bytes at switch-away time".
+      writeFileSync(fileA, line1 + line2)
+      // Re-apply fileA's older mtime: the write above bumped it to "now",
+      // which would otherwise make it look newer than fileB below.
+      await utimes(fileA, t1, t1)
+      writeFileSync(fileB, '')
+      const t2 = new Date('2026-01-02T00:00:00Z')
+      await utimes(fileB, t2, t2)
+
+      // Skip past HYSTERESIS_MS between the two switches below without a
+      // real 10s wait.
+      vi.useFakeTimers()
+      try {
+        // Second cycle detects the switch to fileB. `reconcileJsonlPaths`
+        // flushes fileA's tailer first, which drains line2 (regardless of
+        // whether fs.watch had already picked it up) and posts it — this is
+        // the fix for Finding 5/7: without it, line2 could be silently
+        // skipped forever once fileA's raw byte size already includes it.
+        await runLogSyncCycle(dependencies)
+
+        let row = db
+          .prepare(
+            'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+          )
+          .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+        expect(row.jsonlPath).toBe(fileB)
+        expect(row.jsonlOffset).toBe(0)
+        expect(send).toHaveBeenCalledWith({ content: 'a-line-2-trailing' })
+
+        vi.advanceTimersByTime(11_000) // past HYSTERESIS_MS (10s)
+
+        // Switch back: fileA becomes the newest again.
+        const t3 = new Date('2026-01-03T00:00:00Z')
+        await utimes(fileA, t3, t3)
+
+        await runLogSyncCycle(dependencies)
+
+        row = db
+          .prepare(
+            'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+          )
+          .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+        expect(row.jsonlPath).toBe(fileA)
+        // The round-trip must resume from the offset this session already
+        // finished reading up to on fileA (line1 + line2), not re-derive it
+        // from fileA's current byte size (which happens to be the same
+        // value here, but for the wrong reason — see the assertion below
+        // that neither line is reposted once tailing resumes).
+        expect(row.jsonlOffset).toBe(Buffer.byteLength(line1 + line2, 'utf8'))
+      } finally {
+        vi.useRealTimers()
+      }
+
+      // Append line3 after switching back to fileA; the newly (re)started
+      // tailer must pick it up via real fs.watch/polling.
+      writeFileSync(fileA, line1 + line2 + line3)
+      await waitFor(() => send.mock.calls.length >= 3)
+      expect(send).toHaveBeenCalledWith({ content: 'a-line-3-after-return' })
+
+      const line1Calls = send.mock.calls.filter(
+        (call) => (call[0] as { content?: string }).content === 'a-line-1'
+      )
+      const line2Calls = send.mock.calls.filter(
+        (call) =>
+          (call[0] as { content?: string }).content === 'a-line-2-trailing'
+      )
+      expect(line1Calls).toHaveLength(1)
+      expect(line2Calls).toHaveLength(1)
 
       db.close()
     })
