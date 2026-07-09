@@ -1,9 +1,18 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Config } from '../config/schema'
 import {
+  findLatestJsonlForSessionId,
   resolveContainerConfigDirectory,
   resolveSessionId,
 } from './session-id-resolver'
@@ -382,5 +391,97 @@ describe('resolveSessionId', () => {
     expect(result.kind).toBe('ambiguous')
     if (result.kind !== 'ambiguous') throw new Error('expected ambiguous')
     expect(result.candidates).toHaveLength(25)
+  })
+})
+
+describe('findLatestJsonlForSessionId', () => {
+  let projectsRoot: string
+
+  beforeEach(async () => {
+    projectsRoot = await mkdtemp(path.join(os.tmpdir(), 'projects-root-'))
+  })
+
+  afterEach(async () => {
+    await rm(projectsRoot, { recursive: true, force: true })
+  })
+
+  it('returns undefined when no matching file exists anywhere', async () => {
+    await mkdir(path.join(projectsRoot, 'project-a'))
+    await writeFile(
+      path.join(projectsRoot, 'project-a', 'other-session.jsonl'),
+      ''
+    )
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBeUndefined()
+  })
+
+  it('returns the single match when only one directory has the file', async () => {
+    await mkdir(path.join(projectsRoot, 'project-a'))
+    const expected = path.join(
+      projectsRoot,
+      'project-a',
+      'target-session.jsonl'
+    )
+    await writeFile(expected, '')
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBe(expected)
+  })
+
+  it('returns the file with the most recent mtime when the same sessionId file exists in multiple directories', async () => {
+    await mkdir(path.join(projectsRoot, 'project-old'))
+    await mkdir(path.join(projectsRoot, 'project-new'))
+    const oldFile = path.join(
+      projectsRoot,
+      'project-old',
+      'target-session.jsonl'
+    )
+    const newFile = path.join(
+      projectsRoot,
+      'project-new',
+      'target-session.jsonl'
+    )
+    await writeFile(oldFile, '')
+    await writeFile(newFile, '')
+    const older = new Date('2026-01-01T00:00:00Z')
+    const newer = new Date('2026-01-02T00:00:00Z')
+    await utimes(oldFile, older, older)
+    await utimes(newFile, newer, newer)
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBe(newFile)
+  })
+
+  it('excludes a candidate whose stat() fails (e.g. a broken symlink) and returns the remaining candidate', async () => {
+    await mkdir(path.join(projectsRoot, 'project-broken'))
+    await mkdir(path.join(projectsRoot, 'project-ok'))
+    const brokenLink = path.join(
+      projectsRoot,
+      'project-broken',
+      'target-session.jsonl'
+    )
+    const okFile = path.join(projectsRoot, 'project-ok', 'target-session.jsonl')
+    await symlink(path.join(projectsRoot, 'does-not-exist'), brokenLink)
+    await writeFile(okFile, '')
+
+    const result = await findLatestJsonlForSessionId(
+      projectsRoot,
+      'target-session'
+    )
+
+    expect(result).toBe(okFile)
   })
 })
