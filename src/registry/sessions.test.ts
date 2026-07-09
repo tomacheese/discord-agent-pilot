@@ -76,17 +76,31 @@ describe('thread name source', () => {
 })
 
 describe('sessions registry', () => {
-  it('updates jsonl_path and resets jsonl_offset to 0', () => {
+  it('updates jsonl_path and jsonl_offset to the given offset (0 for an empty target file)', () => {
     const db = openRegistryDb(':memory:')
     insertSession(
       db,
       makeRow({ jsonlPath: '/old/path/session-1.jsonl', jsonlOffset: 500 })
     )
 
-    updateJsonlPath(db, 'session-1', '/new/path/session-1.jsonl')
+    updateJsonlPath(db, 'session-1', '/new/path/session-1.jsonl', 0)
 
     const found = findSessionById(db, 'session-1')
     expect(found?.jsonlPath).toBe('/new/path/session-1.jsonl')
     expect(found?.jsonlOffset).toBe(0)
+  })
+
+  it('updates jsonl_offset to a nonzero, caller-supplied value (pre-existing target file)', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(
+      db,
+      makeRow({ jsonlPath: '/old/path/session-1.jsonl', jsonlOffset: 500 })
+    )
+
+    updateJsonlPath(db, 'session-1', '/new/path/session-1.jsonl', 42)
+
+    const found = findSessionById(db, 'session-1')
+    expect(found?.jsonlPath).toBe('/new/path/session-1.jsonl')
+    expect(found?.jsonlOffset).toBe(42)
   })
 })

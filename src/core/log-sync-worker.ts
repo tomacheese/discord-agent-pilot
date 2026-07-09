@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import { parseJsonlLine } from '../claude-log/parse'
 import {
   formatAssistantEntry,
@@ -297,6 +298,15 @@ async function processLine(
  * trailing writes and the mtime comparison could otherwise flip back and
  * forth between the two files.
  *
+ * On a switch, the new offset is seeded from `latest`'s current byte size
+ * rather than always `0`: entering a fresh worktree yields an empty file
+ * (offset `0`, unchanged from before), but switching back to a pre-existing,
+ * already-populated file must start tailing from its current end so the
+ * tailer does not re-read and re-post that file's historical content to
+ * Discord as if it were new (Issue #25 review finding). If `stat` throws
+ * (e.g. a rare TOCTOU race where `latest` vanished between resolution and
+ * stat), the offset falls back to `0` and the error is logged.
+ *
  * Runs one check per session in parallel via `Promise.allSettled`, mirroring
  * `orchestrator.ts`'s pane-processing pattern: one session's resolution
  * failure must not block the others in the same cycle.
@@ -325,9 +335,19 @@ async function reconcileJsonlPaths(
         tailer.stop()
         state.tailers.delete(session.id)
       }
-      updateJsonlPath(dependencies.db, session.id, latest)
+      let newOffset = 0
+      try {
+        const stats = await stat(latest)
+        newOffset = stats.size
+      } catch (error) {
+        console.error(
+          `Failed to stat new jsonlPath for session ${session.id}, falling back to offset 0:`,
+          error
+        )
+      }
+      updateJsonlPath(dependencies.db, session.id, latest, newOffset)
       session.jsonlPath = latest
-      session.jsonlOffset = 0
+      session.jsonlOffset = newOffset
       state.lastSwitchAtMs.set(session.id, Date.now())
     })
   )

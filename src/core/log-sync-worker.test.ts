@@ -675,6 +675,91 @@ describe('runLogSyncCycle', () => {
       db.close()
     })
 
+    it('seeds the offset from the target file size when switching back to a pre-existing, non-empty file, and only posts newly appended content', async () => {
+      const worktreeDirectory = path.join(projectsRoot, 'worktree-project')
+      const originalDirectory = path.join(projectsRoot, 'original-project')
+      await mkdir(worktreeDirectory, { recursive: true })
+      await mkdir(originalDirectory, { recursive: true })
+      const worktreeFile = path.join(worktreeDirectory, 'session-1.jsonl')
+      const originalFile = path.join(originalDirectory, 'session-1.jsonl')
+
+      // originalFile already has historical content that was presumably
+      // synced to Discord in an earlier stretch of the same session, before
+      // the process entered the worktree.
+      const historicalLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'historical content' }] },
+        }) + '\n'
+      writeFileSync(originalFile, historicalLine)
+      writeFileSync(worktreeFile, '')
+
+      const older = new Date('2026-01-01T00:00:00Z')
+      const newer = new Date('2026-01-02T00:00:00Z')
+      // worktreeFile is currently the session's active jsonlPath (newer mtime
+      // than originalFile), simulating that the process is inside the
+      // worktree right now.
+      await utimes(originalFile, older, older)
+      await utimes(worktreeFile, newer, newer)
+
+      const db = openRegistryDb(':memory:')
+      insertSession(
+        db,
+        makeSession({
+          jsonlPath: worktreeFile,
+          jsonlOffset: 0,
+          configDir: configDirectory,
+        })
+      )
+      const send = vi.fn().mockResolvedValue(undefined)
+      const thread: DiscordThread = {
+        send,
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+        setName: vi.fn().mockResolvedValue(undefined),
+      }
+      const dependencies: LogSyncDependencies = {
+        db,
+        getThread: () => Promise.resolve(thread),
+        pollIntervalMs: 50,
+      }
+
+      // Process exits the worktree: originalFile now becomes the newest
+      // (mtime-wise) again, so the next cycle switches back to it.
+      const newest = new Date('2026-01-03T00:00:00Z')
+      await utimes(originalFile, newest, newest)
+
+      await runLogSyncCycle(dependencies)
+
+      const expectedOffset = Buffer.byteLength(historicalLine, 'utf8')
+      const row = db
+        .prepare(
+          'SELECT jsonl_path AS jsonlPath, jsonl_offset AS jsonlOffset FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { jsonlPath: string; jsonlOffset: number }
+      expect(row.jsonlPath).toBe(originalFile)
+      expect(row.jsonlOffset).toBe(expectedOffset)
+
+      // No new content has been appended yet: the historical line must NOT
+      // be re-posted.
+      expect(send).not.toHaveBeenCalled()
+
+      const newLine =
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'new content after switch back' }],
+          },
+        }) + '\n'
+      writeFileSync(originalFile, historicalLine + newLine)
+
+      await waitFor(() => send.mock.calls.length > 0)
+      expect(send).toHaveBeenCalledWith({
+        content: 'new content after switch back',
+      })
+      expect(send).not.toHaveBeenCalledWith({ content: 'historical content' })
+      db.close()
+    })
+
     it('skips jsonlPath re-resolution within the hysteresis window after a switch, then re-checks once it elapses', async () => {
       vi.useFakeTimers()
       try {

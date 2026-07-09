@@ -74,20 +74,25 @@ export function updateThreadNameSource(
 }
 
 /**
- * Updates `jsonl_path` for `sessionId` and resets `jsonl_offset` to `0`.
- * Used when the session's Claude Code process has started writing to a
- * new JSONL file (e.g. after a cwd switch into a git worktree) — the new
- * file always starts empty, so any previously persisted offset would be
- * meaningless for it.
+ * `sessionId` の `jsonl_path` と `jsonl_offset` を更新する。
+ * セッションの Claude Code プロセスが新しい JSONL ファイルへの書き込みを
+ * 開始したとき(例: git worktree への cwd 切り替え時、およびそこから元の
+ * cwd へ戻ったとき)に使用する。`jsonlOffset` は常に `0` ではなく呼び出し元が
+ * 指定する — 新規 worktree に入った直後のファイルは空なのでオフセット `0` で
+ * 問題ないが、既存の(内容が入った)ファイルに戻る場合はそのファイルの現在の
+ * バイトサイズをオフセットとして与える必要がある。そうしないと tailer が
+ * ファイル先頭から再読込し、既に Discord へ投稿済みの過去の内容を新規分として
+ * 重複投稿してしまう(Issue #25 のレビュー指摘)。
  */
 export function updateJsonlPath(
   db: Database.Database,
   sessionId: string,
-  jsonlPath: string
+  jsonlPath: string,
+  jsonlOffset: number
 ): void {
   db.prepare(
-    'UPDATE sessions SET jsonl_path = ?, jsonl_offset = 0 WHERE id = ?'
-  ).run(jsonlPath, sessionId)
+    'UPDATE sessions SET jsonl_path = ?, jsonl_offset = ? WHERE id = ?'
+  ).run(jsonlPath, jsonlOffset, sessionId)
 }
 
 /**
