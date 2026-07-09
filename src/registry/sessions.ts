@@ -74,6 +74,23 @@ export function updateThreadNameSource(
 }
 
 /**
+ * Updates `jsonl_path` for `sessionId` and resets `jsonl_offset` to `0`.
+ * Used when the session's Claude Code process has started writing to a
+ * new JSONL file (e.g. after a cwd switch into a git worktree) — the new
+ * file always starts empty, so any previously persisted offset would be
+ * meaningless for it.
+ */
+export function updateJsonlPath(
+  db: Database.Database,
+  sessionId: string,
+  jsonlPath: string
+): void {
+  db.prepare(
+    'UPDATE sessions SET jsonl_path = ?, jsonl_offset = 0 WHERE id = ?'
+  ).run(jsonlPath, sessionId)
+}
+
+/**
  * Reads the current `thread_name_source` for `sessionId`.
  * @throws {Error} If no session row exists for `sessionId`.
  */
