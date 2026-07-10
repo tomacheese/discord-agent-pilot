@@ -4,6 +4,7 @@ import {
   findSessionById,
   findSessionByThreadId,
   getThreadNameSource,
+  hasTmuxPane,
   insertSession,
   updateJsonlPath,
   updateThreadNameSource,
@@ -104,6 +105,13 @@ describe('sessions registry', () => {
     const found = findSessionById(db, 'session-1')
     expect(found?.jsonlPath).toBe('/new/path/session-1.jsonl')
     expect(found?.jsonlOffset).toBe(42)
+  })
+})
+
+describe('hasTmuxPane', () => {
+  it('returns false for an empty tmuxPaneId and true for a real one', () => {
+    expect(hasTmuxPane(makeRow({ tmuxPaneId: '' }))).toBe(false)
+    expect(hasTmuxPane(makeRow({ tmuxPaneId: '%3' }))).toBe(true)
   })
 })
 

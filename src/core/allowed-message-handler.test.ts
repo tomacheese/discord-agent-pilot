@@ -3,6 +3,7 @@ import { openRegistryDb } from '../registry/db'
 import { insertSession, type SessionRow } from '../registry/sessions'
 import type { ExecFunction } from '../tmux/list-sessions'
 import type { InputDeliveryDependencies } from './input-delivery-worker'
+import { waitFor } from '../test-utils/wait-for'
 import { handleAllowedMessage } from './allowed-message-handler'
 
 function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
@@ -25,17 +26,6 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
   }
 }
 
-/** Waits until `isConditionMet()` is true, polling every 5ms (up to 1s). */
-async function waitFor(isConditionMet: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000
-  while (!isConditionMet()) {
-    if (Date.now() > deadline) {
-      throw new Error('waitFor: timed out')
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-}
-
 function makeDependencies(exec: ExecFunction): InputDeliveryDependencies {
   return {
     db: openRegistryDb(':memory:'),
@@ -49,7 +39,7 @@ describe('handleAllowedMessage', () => {
     const exec = vi.fn<ExecFunction>().mockResolvedValue('')
     const dependencies = makeDependencies(exec)
 
-    handleAllowedMessage(dependencies.db, dependencies, 'unknown-thread', 'hi')
+    handleAllowedMessage(dependencies, 'unknown-thread', 'hi')
 
     const rows = dependencies.db.prepare('SELECT * FROM input_queue').all()
     expect(rows).toHaveLength(0)
@@ -61,7 +51,7 @@ describe('handleAllowedMessage', () => {
     const dependencies = makeDependencies(exec)
     insertSession(dependencies.db, makeSessionRow({ status: 'closed' }))
 
-    handleAllowedMessage(dependencies.db, dependencies, 'thread-1', 'hi')
+    handleAllowedMessage(dependencies, 'thread-1', 'hi')
 
     const rows = dependencies.db.prepare('SELECT * FROM input_queue').all()
     expect(rows).toHaveLength(0)
@@ -73,12 +63,7 @@ describe('handleAllowedMessage', () => {
     const dependencies = makeDependencies(exec)
     insertSession(dependencies.db, makeSessionRow())
 
-    handleAllowedMessage(
-      dependencies.db,
-      dependencies,
-      'thread-1',
-      ' '.repeat(3)
-    )
+    handleAllowedMessage(dependencies, 'thread-1', ' '.repeat(3))
 
     const rows = dependencies.db.prepare('SELECT * FROM input_queue').all()
     expect(rows).toHaveLength(0)
@@ -90,7 +75,7 @@ describe('handleAllowedMessage', () => {
     const dependencies = makeDependencies(exec)
     insertSession(dependencies.db, makeSessionRow())
 
-    handleAllowedMessage(dependencies.db, dependencies, 'thread-1', '')
+    handleAllowedMessage(dependencies, 'thread-1', '')
 
     const rows = dependencies.db.prepare('SELECT * FROM input_queue').all()
     expect(rows).toHaveLength(0)
@@ -102,7 +87,7 @@ describe('handleAllowedMessage', () => {
     const dependencies = makeDependencies(exec)
     insertSession(dependencies.db, makeSessionRow())
 
-    handleAllowedMessage(dependencies.db, dependencies, 'thread-1', 'hello')
+    handleAllowedMessage(dependencies, 'thread-1', 'hello')
 
     const rows = dependencies.db
       .prepare('SELECT body, state FROM input_queue')

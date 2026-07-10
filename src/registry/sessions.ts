@@ -32,6 +32,14 @@ export interface SessionRow {
 }
 
 /**
+ * Returns whether `session` has a resolved tmux pane id, i.e. `tmuxPaneId`
+ * is not the empty-string sentinel documented on `SessionRow.tmuxPaneId`.
+ */
+export function hasTmuxPane(session: SessionRow): boolean {
+  return session.tmuxPaneId !== ''
+}
+
+/**
  * Returns the session row for `id` (the Claude Code sessionId), or undefined if not registered.
  */
 export function findSessionById(

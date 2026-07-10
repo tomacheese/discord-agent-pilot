@@ -31,7 +31,11 @@ const database = openRegistryDatabase(
   process.env.DB_PATH ?? './data/registry.db'
 )
 
-/** Fetches the configured parent channel and starts the detection polling loop. */
+/**
+ * Wires up the Discord client (including the allowed-message input-queue
+ * handler), fetches the configured parent channel, runs startup crash
+ * recovery for `input_queue`, and starts the detection polling loop.
+ */
 async function main(): Promise<void> {
   const socketPath = resolveTmuxSocketPath(config.tmux.socketDir)
 
@@ -44,7 +48,6 @@ async function main(): Promise<void> {
   const client = createDiscordClient(config, {
     onAllowedMessage: (message) => {
       handleAllowedMessage(
-        database,
         inputDeliveryDependencies,
         message.channelId,
         message.content
@@ -52,14 +55,16 @@ async function main(): Promise<void> {
     },
   })
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     client.once('ready', () => {
       resolve()
     })
     // config.yaml's discordToken takes precedence over DISCORD_TOKEN so a
     // deployment can choose either without the other silently overriding it.
-    // eslint-disable-next-line no-void
-    void client.login(config.discordToken ?? process.env.DISCORD_TOKEN)
+    // The executor callback itself cannot be async, so a rejected login
+    // promise is routed to `reject` via `.catch` instead of `await`.
+    // eslint-disable-next-line unicorn/prefer-await
+    client.login(config.discordToken ?? process.env.DISCORD_TOKEN).catch(reject)
   })
 
   const rawChannel = await client.channels.fetch(config.parentChannel.id)

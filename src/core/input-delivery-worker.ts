@@ -3,7 +3,11 @@ import {
   findOldestPendingInput,
   updateInputQueueState,
 } from '../registry/input-queue'
-import { findSessionById } from '../registry/sessions'
+import {
+  findSessionById,
+  hasTmuxPane,
+  type SessionRow,
+} from '../registry/sessions'
 import { sendTextToPane } from '../tmux/send'
 import type { ExecFunction } from '../tmux/list-sessions'
 
@@ -38,28 +42,32 @@ function makeBufferName(sessionId: string, inputQueueRowId: number): string {
 }
 
 /**
- * Delivers one pending row for `sessionId`: resolves the session's
- * `tmuxPaneId`, sends the row's body via `sendTextToPane`, and updates the
- * row's state to `sent` or `failed`. Never throws — all failures are
- * recorded as `state = 'failed'` on the row itself so the caller's loop can
- * continue to the next row.
+ * Delivers one pending row for `sessionId`, using the already-resolved
+ * `session` (its `tmuxPaneId` does not change across a single
+ * `triggerInputDelivery` invocation's drain loop, so the caller resolves it
+ * once rather than re-querying per row): sends the row's body via
+ * `sendTextToPane`, and updates the row's state to `sent` or `failed`.
+ * Never throws — all failures (including a missing/unresolved session, or
+ * an error while writing the `sending` state) are recorded as
+ * `state = 'failed'` on the row itself so the caller's loop can continue to
+ * the next row.
  */
 async function deliverOne(
   dependencies: InputDeliveryDependencies,
   sessionId: string,
+  session: SessionRow | undefined,
   row: { id: number; body: string }
 ): Promise<void> {
-  const session = findSessionById(dependencies.db, sessionId)
-  if (!session || session.tmuxPaneId === '') {
-    console.error(
-      `No resolvable tmux pane for session ${sessionId}; marking input_queue row ${row.id} as failed`
-    )
-    updateInputQueueState(dependencies.db, row.id, 'failed')
-    return
-  }
-
-  updateInputQueueState(dependencies.db, row.id, 'sending')
   try {
+    if (!session || !hasTmuxPane(session)) {
+      console.error(
+        `No resolvable tmux pane for session ${sessionId}; marking input_queue row ${row.id} as failed`
+      )
+      updateInputQueueState(dependencies.db, row.id, 'failed')
+      return
+    }
+
+    updateInputQueueState(dependencies.db, row.id, 'sending')
     await sendTextToPane(
       dependencies.exec,
       dependencies.socketPath,
@@ -100,10 +108,11 @@ export function triggerInputDelivery(
   inProgress.add(sessionId)
 
   const loop = async (): Promise<void> => {
+    const session = findSessionById(dependencies.db, sessionId)
     for (;;) {
       const row = findOldestPendingInput(dependencies.db, sessionId)
       if (!row) return
-      await deliverOne(dependencies, sessionId, row)
+      await deliverOne(dependencies, sessionId, session, row)
     }
   }
 

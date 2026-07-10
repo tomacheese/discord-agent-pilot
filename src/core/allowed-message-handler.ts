@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3'
 import { findSessionByThreadId } from '../registry/sessions'
 import { insertPendingInput } from '../registry/input-queue'
 import {
@@ -16,13 +15,17 @@ import {
  * The empty/whitespace-only skip guards against attachment-only or
  * sticker-only posts, whose `content` is `''`: queuing those would make the
  * delivery worker submit a bare Enter keystroke to the live tmux pane.
+ *
+ * Uses `inputDeliveryDependencies.db` for both lookups and queuing rather
+ * than taking a separate `db` parameter, so there is only one database
+ * instance in play instead of two that could accidentally diverge.
  */
 export function handleAllowedMessage(
-  db: Database.Database,
   inputDeliveryDependencies: InputDeliveryDependencies,
   threadId: string,
   content: string
 ): void {
+  const { db } = inputDeliveryDependencies
   const session = findSessionByThreadId(db, threadId)
   if (!session || session.status === 'closed') return
   if (content.trim() === '') return

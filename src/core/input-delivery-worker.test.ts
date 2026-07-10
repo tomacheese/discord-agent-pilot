@@ -3,6 +3,7 @@ import { openRegistryDb } from '../registry/db'
 import { insertSession, type SessionRow } from '../registry/sessions'
 import { insertPendingInput } from '../registry/input-queue'
 import type { ExecFunction } from '../tmux/list-sessions'
+import { waitFor } from '../test-utils/wait-for'
 import {
   triggerInputDelivery,
   type InputDeliveryDependencies,
@@ -25,17 +26,6 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     createdAt: 1000,
     updatedAt: 1000,
     ...overrides,
-  }
-}
-
-/** Waits until `isConditionMet()` is true, polling every 5ms (up to 1s). */
-async function waitFor(isConditionMet: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000
-  while (!isConditionMet()) {
-    if (Date.now() > deadline) {
-      throw new Error('waitFor: timed out')
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
 
