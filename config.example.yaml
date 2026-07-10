@@ -8,9 +8,14 @@ allowedUserIds:
   - '345678901234567890'
 workspaceRoots:
   - '/mnt/ssd/repos'
+# CLAUDE_CONFIG_DIR で既定以外の値を使うセッションのみ、ここに列挙したものが許可される
+# (`claude.defaultConfigDir` は常に暗黙的に許可される)。
+# hostPath は /proc/<pid>/environ から取得する値と文字列比較するため、`~` はサポートされず絶対パスで指定する。
+# 複数の CLAUDE_CONFIG_DIR を許可する場合は、この配列にエントリを追加し、
+# compose.yaml 側にも hostPath ごとに1つ bind mount を追加する。
 configDirs:
-  - hostPath: '~/.claude'
-    containerPath: '/host/claude-config'
+  - hostPath: '/home/user/.claude-work'
+    containerPath: '/host/claude-config-work'
 tmux:
   pollIntervalMs: 3000
   socketDir: '/tmp/tmux-host'
