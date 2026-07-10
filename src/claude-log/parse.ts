@@ -1,20 +1,20 @@
 import { parseJsonl, type ParsedLine } from 'claude-code-jsonl-parser'
 
 /**
- * JSONL の 1 行をパースする。ライブラリの `parseJsonl` は改行区切りの全文を
- * 前提とするため、改行を含まない 1 行を渡して結果配列の先頭要素を返す薄い
- * ラッパー。空行(トリム後に空)は `parseJsonl` が結果を生成しないため
- * `undefined` を返す。
- * `parseJsonl` は常に `Result<ParsedLine[], never>` の Ok を返す仕様だが、
- * `ErrResult<never>` は `value` プロパティを持たない型のため直接
- * `.value` にはアクセスできない。`unwrapOr` は Ok/Err どちらの型にも
- * 存在するため、型を安全に絞り込む代わりにこちらを使う。
- * @param line - 改行を含まない 1 行分の文字列
- * @returns パース結果。空行の場合は `undefined`
+ * Parses a single line of JSONL. The library's `parseJsonl` function expects
+ * newline-delimited content, so this is a thin wrapper that accepts a line
+ * without newlines and returns the first element of the result array. Empty
+ * lines (whitespace-only after trimming) produce no result from `parseJsonl`,
+ * so this returns `undefined` in those cases.
+ *
+ * Note: `parseJsonl` always returns Ok for Result<ParsedLine[], never>, but
+ * ErrResult<never> does not have a `value` property, so direct access to
+ * `.value` would require type narrowing. We use `.unwrapOr([])` instead since
+ * it exists on both Ok and Err types, providing a safe unified interface.
+ * @param line - A single line of string without newlines
+ * @returns The parsed result, or `undefined` if the line is empty
  */
 export function parseJsonlLine(line: string): ParsedLine | undefined {
   const lines: ParsedLine[] = parseJsonl(line).unwrapOr([])
   return lines[0]
 }
-
-export type { ParsedLine } from 'claude-code-jsonl-parser'
