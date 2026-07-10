@@ -44,6 +44,22 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
   }
 }
 
+/** Returns the `EntryBase` fields required by the library's `assistant`/`user` guards, for spreading into test JSONL fixtures. */
+function makeEntryBase(sessionId = 'session-1'): Record<string, unknown> {
+  return {
+    cwd: '/cwd',
+    entrypoint: 'cli',
+    gitBranch: 'main',
+    isSidechain: false,
+    parentUuid: null,
+    sessionId,
+    timestamp: '2026-01-01T00:00:00.000Z',
+    userType: 'external',
+    uuid: 'uuid-1',
+    version: '1.0.0',
+  }
+}
+
 describe('runLogSyncCycle', () => {
   let temporaryDirectory: string
   let jsonlPath: string
@@ -79,8 +95,14 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'hello world' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'hello world' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
@@ -119,8 +141,14 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'always fails' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'always fails' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
@@ -138,8 +166,14 @@ describe('runLogSyncCycle', () => {
     send.mockResolvedValue(undefined)
     const nextLine =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'next line' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'next line' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line + nextLine)
     await waitFor(() =>
@@ -175,8 +209,12 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'user',
-        message: { content: [{ type: 'text', text: 'from discord' }] },
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'from discord' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
@@ -219,13 +257,25 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line1 =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'first line' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'first line' }],
+        },
       }) + '\n'
     const line2 =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'second line' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'second line' }],
+        },
       }) + '\n'
     const batch = line1 + line2
     writeFileSync(jsonlPath, batch)
@@ -265,8 +315,12 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'user',
-        message: { content: [{ type: 'text', text: 'typed in tmux' }] },
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'typed in tmux' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
@@ -301,8 +355,10 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'user',
         message: {
+          role: 'user',
           content: [
             { type: 'text', text: 'from discord' },
             { type: 'text', text: 'not an echo' },
@@ -359,8 +415,14 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
     const line =
       JSON.stringify({
+        ...makeEntryBase(),
         type: 'assistant',
-        message: { content: [{ type: 'text', text: 'hello again' }] },
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'hello again' }],
+        },
       }) + '\n'
     writeFileSync(jsonlPath, line)
 
@@ -407,7 +469,11 @@ describe('runLogSyncCycle', () => {
 
     await runLogSyncCycle(dependencies)
     const line =
-      JSON.stringify({ type: 'ai-title', aiTitle: 'Fix login bug' }) + '\n'
+      JSON.stringify({
+        type: 'ai-title',
+        aiTitle: 'Fix login bug',
+        sessionId: 'session-1',
+      }) + '\n'
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => setName.mock.calls.length > 0)
@@ -444,7 +510,11 @@ describe('runLogSyncCycle', () => {
 
     await runLogSyncCycle(dependencies)
     const line =
-      JSON.stringify({ type: 'ai-title', aiTitle: 'Fix login bug' }) + '\n'
+      JSON.stringify({
+        type: 'ai-title',
+        aiTitle: 'Fix login bug',
+        sessionId: 'session-1',
+      }) + '\n'
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => {
@@ -487,7 +557,11 @@ describe('runLogSyncCycle', () => {
 
     await runLogSyncCycle(dependencies)
     const line =
-      JSON.stringify({ type: 'ai-title', aiTitle: 'stale summary' }) + '\n'
+      JSON.stringify({
+        type: 'ai-title',
+        aiTitle: 'stale summary',
+        sessionId: 'session-1',
+      }) + '\n'
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => {
@@ -522,7 +596,11 @@ describe('runLogSyncCycle', () => {
     await runLogSyncCycle(dependencies)
 
     const agentNameLine =
-      JSON.stringify({ type: 'agent-name', agentName: 'auth-refactor' }) + '\n'
+      JSON.stringify({
+        type: 'agent-name',
+        agentName: 'auth-refactor',
+        sessionId: 'session-1',
+      }) + '\n'
     writeFileSync(jsonlPath, agentNameLine)
 
     await waitFor(() => setName.mock.calls.length > 0)
@@ -540,7 +618,11 @@ describe('runLogSyncCycle', () => {
     // fix, the tailer's stale in-memory session object would still compare
     // against 'fallback' and incorrectly downgrade the name.
     const aiTitleLine =
-      JSON.stringify({ type: 'ai-title', aiTitle: 'stale summary' }) + '\n'
+      JSON.stringify({
+        type: 'ai-title',
+        aiTitle: 'stale summary',
+        sessionId: 'session-1',
+      }) + '\n'
     const batch = agentNameLine + aiTitleLine
     writeFileSync(jsonlPath, batch)
 
@@ -581,11 +663,198 @@ describe('runLogSyncCycle', () => {
 
     await runLogSyncCycle(dependencies)
     const line =
-      JSON.stringify({ type: 'agent-name', agentName: 'auth-refactor' }) + '\n'
+      JSON.stringify({
+        type: 'agent-name',
+        agentName: 'auth-refactor',
+        sessionId: 'session-1',
+      }) + '\n'
     writeFileSync(jsonlPath, line)
 
     await waitFor(() => setName.mock.calls.length > 0)
     expect(setName).toHaveBeenCalledWith('auth-refactor')
+    db.close()
+  })
+
+  it('skips a line with invalid JSON syntax, advances the offset, and warns', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const send = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send,
+      sendTyping: vi.fn(),
+      setName: vi.fn().mockResolvedValue(undefined),
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line = '{not valid json\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+    db.close()
+  })
+
+  it('skips a line with an unrecognized type, advances the offset, and does not warn', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const send = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send,
+      sendTyping: vi.fn(),
+      setName: vi.fn().mockResolvedValue(undefined),
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    const line = JSON.stringify({ type: 'totally-unrecognized-type' }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(warnSpy).not.toHaveBeenCalled()
+
+    warnSpy.mockRestore()
+    db.close()
+  })
+
+  it('skips a known-type line with a non-conforming shape, advances the offset, and warns with the typeHint/reason', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const send = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send,
+      sendTyping: vi.fn(),
+      setName: vi.fn().mockResolvedValue(undefined),
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+    const warnSpy = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
+
+    await runLogSyncCycle(dependencies)
+    // `type: 'assistant'` but missing EntryBase's required fields, so it
+    // becomes `_kind: 'unknown'` (with a typeHint).
+    const line = JSON.stringify({ type: 'assistant' }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('assistant'),
+      expect.any(String)
+    )
+
+    warnSpy.mockRestore()
+    db.close()
+  })
+
+  it('ignores an ai-title entry with an empty aiTitle instead of renaming the thread', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const setName = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+      setName,
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({
+        type: 'ai-title',
+        aiTitle: '',
+        sessionId: 'session-1',
+      }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(setName).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('ignores an agent-name entry with an empty agentName instead of renaming the thread', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const setName = vi.fn().mockResolvedValue(undefined)
+    const thread: DiscordThread = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+      setName,
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+
+    await runLogSyncCycle(dependencies)
+    const line =
+      JSON.stringify({
+        type: 'agent-name',
+        agentName: '',
+        sessionId: 'session-1',
+      }) + '\n'
+    writeFileSync(jsonlPath, line)
+
+    await waitFor(() => {
+      const row = db
+        .prepare('SELECT jsonl_offset FROM sessions WHERE id = ?')
+        .get('session-1') as { jsonl_offset: number }
+      return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    expect(setName).not.toHaveBeenCalled()
     db.close()
   })
 
@@ -650,8 +919,14 @@ describe('runLogSyncCycle', () => {
 
       const line =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'from new file' }] },
+          message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
+            content: [{ type: 'text', text: 'from new file' }],
+          },
         }) + '\n'
       writeFileSync(newFile, line)
 
@@ -673,8 +948,14 @@ describe('runLogSyncCycle', () => {
       // the process entered the worktree.
       const historicalLine =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'historical content' }] },
+          message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
+            content: [{ type: 'text', text: 'historical content' }],
+          },
         }) + '\n'
       writeFileSync(originalFile, historicalLine)
       writeFileSync(worktreeFile, '')
@@ -730,8 +1011,12 @@ describe('runLogSyncCycle', () => {
 
       const newLine =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
           message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
             content: [{ type: 'text', text: 'new content after switch back' }],
           },
         }) + '\n'
@@ -890,8 +1175,14 @@ describe('runLogSyncCycle', () => {
 
       const oldLine =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'from old file' }] },
+          message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
+            content: [{ type: 'text', text: 'from old file' }],
+          },
         }) + '\n'
       writeFileSync(oldFile, oldLine)
       const older = new Date('2026-01-01T00:00:00Z')
@@ -988,18 +1279,34 @@ describe('runLogSyncCycle', () => {
 
       const line1 =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'a-line-1' }] },
+          message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
+            content: [{ type: 'text', text: 'a-line-1' }],
+          },
         }) + '\n'
       const line2 =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
-          message: { content: [{ type: 'text', text: 'a-line-2-trailing' }] },
+          message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
+            content: [{ type: 'text', text: 'a-line-2-trailing' }],
+          },
         }) + '\n'
       const line3 =
         JSON.stringify({
+          ...makeEntryBase(),
           type: 'assistant',
           message: {
+            role: 'assistant',
+            id: 'msg-1',
+            model: 'claude-1',
             content: [{ type: 'text', text: 'a-line-3-after-return' }],
           },
         }) + '\n'
