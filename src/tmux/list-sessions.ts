@@ -22,7 +22,7 @@ export type ExecFunction = (
 ) => Promise<string>
 
 /** Default exec implementation: invokes the real `tmux` client binary. */
-const defaultExec: ExecFunction = async (socketPath, arguments_) => {
+export const defaultExec: ExecFunction = async (socketPath, arguments_) => {
   const { stdout } = await execFileAsync('tmux', [
     '-S',
     socketPath,
