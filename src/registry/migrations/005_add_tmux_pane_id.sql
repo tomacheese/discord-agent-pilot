@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN tmux_pane_id TEXT NOT NULL DEFAULT '';

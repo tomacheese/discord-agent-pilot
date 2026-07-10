@@ -32,6 +32,7 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     parentChannelId: 'channel-1',
     tmuxSession: 'tmux-1',
     tmuxPanePid: '123',
+    tmuxPaneId: '%0',
     cwd: '/cwd',
     configDir: '/config',
     jsonlPath: '/tmp/should-be-overridden.jsonl',

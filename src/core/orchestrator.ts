@@ -112,6 +112,7 @@ async function registerSession(
       parentChannelId: config.parentChannel.id,
       tmuxSession,
       tmuxPanePid: panePid,
+      tmuxPaneId: '',
       cwd,
       configDir: containerConfigDirectory,
       jsonlPath,

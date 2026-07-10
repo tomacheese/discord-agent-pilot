@@ -12,6 +12,15 @@ export interface SessionRow {
   parentChannelId: string
   tmuxSession: string
   tmuxPanePid: string
+  /**
+   * tmux's own pane identifier (e.g. `%12`), unique across the whole tmux
+   * server. Unlike `tmuxSession` (a session may have multiple panes) or
+   * `tmuxPanePid` (a process PID, not usable as a tmux `-t` target), this is
+   * the value used to target `set-buffer`/`paste-buffer`/`send-keys` at
+   * this session's exact pane. Empty string for rows registered before this
+   * column existed (pre-release data; not backfilled).
+   */
+  tmuxPaneId: string
   cwd: string
   configDir: string
   jsonlPath: string
@@ -33,6 +42,7 @@ export function findSessionById(
     .prepare(
       `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
               tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
+              tmux_pane_id AS tmuxPaneId,
               cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
               jsonl_offset AS jsonlOffset, status,
               thread_name_source AS threadNameSource,
@@ -40,6 +50,29 @@ export function findSessionById(
        FROM sessions WHERE id = ?`
     )
     .get(id) as SessionRow | undefined
+}
+
+/**
+ * Returns the session row whose `threadId` matches `threadId`, or undefined
+ * if no session is registered for that Discord thread. Used to resolve a
+ * Discord message's channel/thread back to the session it belongs to.
+ */
+export function findSessionByThreadId(
+  db: Database.Database,
+  threadId: string
+): SessionRow | undefined {
+  return db
+    .prepare(
+      `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
+              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
+              tmux_pane_id AS tmuxPaneId,
+              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
+              jsonl_offset AS jsonlOffset, status,
+              thread_name_source AS threadNameSource,
+              created_at AS createdAt, updated_at AS updatedAt
+       FROM sessions WHERE thread_id = ?`
+    )
+    .get(threadId) as SessionRow | undefined
 }
 
 /**
@@ -51,13 +84,13 @@ export function insertSession(
 ): void {
   db.prepare(
     `INSERT INTO sessions
-       (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid, cwd,
-        config_dir, jsonl_path, jsonl_offset, status, thread_name_source,
-        created_at, updated_at)
+       (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid,
+        tmux_pane_id, cwd, config_dir, jsonl_path, jsonl_offset, status,
+        thread_name_source, created_at, updated_at)
      VALUES
-       (@id, @threadId, @parentChannelId, @tmuxSession, @tmuxPanePid, @cwd,
-        @configDir, @jsonlPath, @jsonlOffset, @status, @threadNameSource,
-        @createdAt, @updatedAt)`
+       (@id, @threadId, @parentChannelId, @tmuxSession, @tmuxPanePid,
+        @tmuxPaneId, @cwd, @configDir, @jsonlPath, @jsonlOffset, @status,
+        @threadNameSource, @createdAt, @updatedAt)`
   ).run(session)
 }
 
