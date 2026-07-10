@@ -310,6 +310,19 @@ async function processLine(
   lineText: string,
   offsetAfter: number
 ): Promise<void> {
+  // Centralizes the `updateJsonlOffset(dependencies.db, session.id,
+  // session.jsonlPath, offsetAfter)` call repeated across this function's
+  // early-return branches, so a future edit can't drop one of the four
+  // arguments (as previously happened on two of these call-sites; see
+  // Issue #19's migration PR review).
+  const advanceOffset = (): void => {
+    updateJsonlOffset(
+      dependencies.db,
+      session.id,
+      session.jsonlPath,
+      offsetAfter
+    )
+  }
   const parsed = parseJsonlLine(lineText)
   if (!parsed || parsed._kind === 'error') {
     if (parsed) {
@@ -318,12 +331,7 @@ async function processLine(
         parsed.message
       )
     }
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   if (parsed._kind === 'unknown') {
@@ -333,12 +341,7 @@ async function processLine(
         parsed.reason
       )
     }
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   if (
@@ -347,12 +350,7 @@ async function processLine(
     parsed.type !== 'agent-name' &&
     parsed.type !== 'ai-title'
   ) {
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   if (parsed.type === 'agent-name' || parsed.type === 'ai-title') {
@@ -379,12 +377,7 @@ async function processLine(
           `Failed to set thread name for session ${session.id}; skipping:`,
           error
         )
-        updateJsonlOffset(
-          dependencies.db,
-          session.id,
-          session.jsonlPath,
-          offsetAfter
-        )
+        advanceOffset()
         return
       }
       updateThreadNameSource(dependencies.db, session.id, candidateSource)
@@ -395,12 +388,7 @@ async function processLine(
       // ai-title).
       session.threadNameSource = candidateSource
     }
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   const pendingConsumedIds: string[] = []
@@ -426,12 +414,7 @@ async function processLine(
       `Failed to post line for session ${session.id}; skipping line:`,
       error
     )
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   // Only merge matched echo IDs into the shared set once the whole line's
@@ -439,7 +422,7 @@ async function processLine(
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
   }
-  updateJsonlOffset(dependencies.db, session.id, session.jsonlPath, offsetAfter)
+  advanceOffset()
 }
 
 /**
