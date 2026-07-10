@@ -21,7 +21,7 @@ describe('parseJsonlLine', () => {
   })
 
   it('returns undefined for a whitespace-only line', () => {
-    expect(parseJsonlLine('   ')).toBeUndefined()
+    expect(parseJsonlLine(' '.repeat(3))).toBeUndefined()
   })
 
   it('returns a LineParseError for invalid JSON', () => {
