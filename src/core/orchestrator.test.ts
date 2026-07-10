@@ -114,6 +114,22 @@ describe('runDetectionCycle', () => {
     expect(findSessionById(dependencies.db, 'session-1')).toBeDefined()
   })
 
+  it('stores the pane paneId from listAllTmuxPanes as tmuxPaneId on the session row', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([
+      { sessionName: 'tmux-1', paneId: '%7', pid: '100' },
+    ])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies } = makeDependencies()
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.tmuxPaneId).toBe('%7')
+  })
+
   it('uses the jsonlPath returned by resolveSessionId as-is, without reconstructing it from cwd', async () => {
     // Regression test for Issue #16: orchestrator.ts must not rebuild
     // jsonlPath from cwd itself (that reconstruction can drift from the
