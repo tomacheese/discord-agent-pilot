@@ -14,17 +14,59 @@ import {
   type LogSyncDependencies,
   type SendInput,
 } from './core/log-sync-worker'
-import { resolveTmuxSocketPath } from './tmux/list-sessions'
+import {
+  triggerInputDelivery,
+  type InputDeliveryDependencies,
+} from './core/input-delivery-worker'
+import {
+  findSessionIdsWithPendingInput,
+  resetStaleSendingInputs,
+} from './registry/input-queue'
+import { handleAllowedMessage } from './core/allowed-message-handler'
+import { defaultExec, resolveTmuxSocketPath } from './tmux/list-sessions'
 
 const configPath = process.env.CONFIG_PATH ?? './config.yaml'
 const config = loadConfig(configPath)
 const database = openRegistryDatabase(
   process.env.DB_PATH ?? './data/registry.db'
 )
-const client = createDiscordClient(config)
 
-/** Fetches the configured parent channel and starts the detection polling loop. */
+/**
+ * Wires up the Discord client (including the allowed-message input-queue
+ * handler), fetches the configured parent channel, runs startup crash
+ * recovery for `input_queue`, and starts the detection polling loop.
+ */
 async function main(): Promise<void> {
+  const socketPath = resolveTmuxSocketPath(config.tmux.socketDir)
+
+  const inputDeliveryDependencies: InputDeliveryDependencies = {
+    db: database,
+    exec: defaultExec,
+    socketPath,
+  }
+
+  const client = createDiscordClient(config, {
+    onAllowedMessage: (message) => {
+      handleAllowedMessage(
+        inputDeliveryDependencies,
+        message.channelId,
+        message.content
+      )
+    },
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    client.once('ready', () => {
+      resolve()
+    })
+    // config.yaml's discordToken takes precedence over DISCORD_TOKEN so a
+    // deployment can choose either without the other silently overriding it.
+    // The executor callback itself cannot be async, so a rejected login
+    // promise is routed to `reject` via `.catch` instead of `await`.
+    // eslint-disable-next-line unicorn/prefer-await
+    client.login(config.discordToken ?? process.env.DISCORD_TOKEN).catch(reject)
+  })
+
   const rawChannel = await client.channels.fetch(config.parentChannel.id)
   if (!rawChannel || !('threads' in rawChannel)) {
     throw new Error(
@@ -35,7 +77,6 @@ async function main(): Promise<void> {
     rawChannel as ForumChannel | TextChannel,
     config.parentChannel.type
   )
-  const socketPath = resolveTmuxSocketPath(config.tmux.socketDir)
 
   const dependencies: OrchestratorDependencies = {
     db: database,
@@ -123,18 +164,21 @@ async function main(): Promise<void> {
         isCycleInProgress = false
       })
   }, config.tmux.pollIntervalMs)
+
+  // Crash recovery: rows left in "sending" from a previous run have
+  // unknown delivery outcome, so they are resolved to "failed" rather than
+  // silently retried (see resetStaleSendingInputs's doc comment).
+  resetStaleSendingInputs(database)
+  // Delivery is otherwise only triggered on message arrival; sweep any
+  // backlog left over from before this restart.
+  for (const sessionId of findSessionIdsWithPendingInput(database)) {
+    triggerInputDelivery(inputDeliveryDependencies, sessionId)
+  }
 }
 
-client.once('ready', () => {
-  // eslint-disable-next-line no-void
-  void main().catch((error: unknown) => {
-    console.error('Fatal error while starting the orchestrator:', error)
-    // eslint-disable-next-line unicorn/no-process-exit
-    process.exit(1)
-  })
-})
-
-// config.yaml's discordToken takes precedence over DISCORD_TOKEN so a
-// deployment can choose either without the other silently overriding it.
 // eslint-disable-next-line no-void
-void client.login(config.discordToken ?? process.env.DISCORD_TOKEN)
+void main().catch((error: unknown) => {
+  console.error('Fatal error while starting the orchestrator:', error)
+  // eslint-disable-next-line unicorn/no-process-exit
+  process.exit(1)
+})

@@ -92,6 +92,7 @@ async function registerSession(
   sessionId: string,
   tmuxSession: string,
   panePid: string,
+  paneId: string,
   claudePid: string,
   cwd: string,
   containerConfigDirectory: string,
@@ -112,6 +113,7 @@ async function registerSession(
       parentChannelId: config.parentChannel.id,
       tmuxSession,
       tmuxPanePid: panePid,
+      tmuxPaneId: paneId,
       cwd,
       configDir: containerConfigDirectory,
       jsonlPath,
@@ -136,7 +138,8 @@ async function processPane(
   dependencies: OrchestratorDependencies,
   config: Config,
   tmuxSession: string,
-  panePid: string
+  panePid: string,
+  paneId: string
 ): Promise<void> {
   const cachedClaudePid = dependencies.resolvedPanes.get(
     paneKey(tmuxSession, panePid)
@@ -203,6 +206,7 @@ async function processPane(
       selected.sessionId,
       tmuxSession,
       panePid,
+      paneId,
       claudePid,
       cwd,
       containerConfigDirectory,
@@ -217,6 +221,7 @@ async function processPane(
     resolution.sessionId,
     tmuxSession,
     panePid,
+    paneId,
     claudePid,
     cwd,
     containerConfigDirectory,
@@ -241,7 +246,7 @@ export async function runDetectionCycle(
   const panes = await listAllTmuxPanes(dependencies.socketPath)
   const results = await Promise.allSettled(
     panes.map((pane) =>
-      processPane(dependencies, config, pane.sessionName, pane.pid)
+      processPane(dependencies, config, pane.sessionName, pane.pid, pane.paneId)
     )
   )
   for (const [index, result] of results.entries()) {

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { openRegistryDb } from './db'
 import {
   findSessionById,
+  findSessionByThreadId,
   getThreadNameSource,
+  hasTmuxPane,
   insertSession,
   updateJsonlPath,
   updateThreadNameSource,
@@ -16,6 +18,7 @@ function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
     parentChannelId: 'channel-1',
     tmuxSession: 'tmux-1',
     tmuxPanePid: '1234',
+    tmuxPaneId: '%0',
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
     jsonlPath:
@@ -102,5 +105,26 @@ describe('sessions registry', () => {
     const found = findSessionById(db, 'session-1')
     expect(found?.jsonlPath).toBe('/new/path/session-1.jsonl')
     expect(found?.jsonlOffset).toBe(42)
+  })
+})
+
+describe('hasTmuxPane', () => {
+  it('returns false for an empty tmuxPaneId and true for a real one', () => {
+    expect(hasTmuxPane(makeRow({ tmuxPaneId: '' }))).toBe(false)
+    expect(hasTmuxPane(makeRow({ tmuxPaneId: '%3' }))).toBe(true)
+  })
+})
+
+describe('findSessionByThreadId', () => {
+  it('returns the session row matching the given threadId', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+    expect(findSessionByThreadId(db, 'thread-1')).toEqual(makeRow())
+  })
+
+  it('returns undefined when no session has the given threadId', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+    expect(findSessionByThreadId(db, 'unknown-thread')).toBeUndefined()
   })
 })
