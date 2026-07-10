@@ -136,10 +136,9 @@ describe('findSessionIdsWithPendingInput', () => {
     insertPendingInput(db, 'session-1', 'discord', 'b')
     insertPendingInput(db, 'session-2', 'discord', 'c')
 
-    expect(findSessionIdsWithPendingInput(db).toSorted()).toEqual([
-      'session-1',
-      'session-2',
-    ])
+    expect(
+      findSessionIdsWithPendingInput(db).toSorted((a, b) => a.localeCompare(b))
+    ).toEqual(['session-1', 'session-2'])
   })
 
   it('returns an empty array when no session has a pending row', () => {
