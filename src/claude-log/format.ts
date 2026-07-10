@@ -230,10 +230,11 @@ function extractToolResultText(
 }
 
 /**
- * Converts a user entry's content blocks into Discord PostItems, in order.
- * `isEcho` determines whether a plain-text block matches an unconsumed
- * Discord-originated `input_queue` entry and should therefore be skipped
- * (it is already visible in Discord as the original message).
+ * Converts a user entry's content into Discord PostItems, in order.
+ * A plain string `content` is normalized into a single text block before
+ * processing. `isEcho` determines whether a plain-text block matches an
+ * unconsumed Discord-originated `input_queue` entry and should therefore be
+ * skipped (it is already visible in Discord as the original message).
  */
 export function formatUserEntry(
   content: UserMessage['content'],
