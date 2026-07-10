@@ -1,169 +1,38 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { parseJsonlLine } from './parse'
 
 describe('parseJsonlLine', () => {
-  it('parses an assistant entry with thinking, text, and tool_use blocks', () => {
+  it('parses a single JSONL line by delegating to the library', () => {
     const line = JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'thinking', thinking: 'let me check the file' },
-          { type: 'text', text: 'Here is the result.' },
-          {
-            type: 'tool_use',
-            id: 'toolu_1',
-            name: 'Bash',
-            input: { command: 'ls -la', description: 'list files' },
-          },
-        ],
-      },
-    })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'assistant',
-      content: [
-        { type: 'thinking' },
-        { type: 'text', text: 'Here is the result.' },
-        {
-          type: 'tool_use',
-          id: 'toolu_1',
-          name: 'Bash',
-          input: { command: 'ls -la', description: 'list files' },
-        },
-      ],
-    })
-  })
-
-  it('parses a user entry with a normal tool_result', () => {
-    const line = JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'total 0' },
-        ],
-      },
-    })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'user',
-      content: [
-        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'total 0' },
-      ],
-    })
-  })
-
-  it('parses a user entry with an is_error tool_result', () => {
-    const line = JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_2',
-            content: 'command not found',
-            is_error: true,
-          },
-        ],
-      },
-    })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'user',
-      content: [
-        {
-          type: 'tool_result',
-          tool_use_id: 'toolu_2',
-          content: 'command not found',
-          is_error: true,
-        },
-      ],
-    })
-  })
-
-  it('normalizes an array-form tool_result content into a joined string', () => {
-    const line = JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_3',
-            content: [
-              { type: 'text', text: 'line one' },
-              { type: 'text', text: 'line two' },
-            ],
-          },
-        ],
-      },
-    })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'user',
-      content: [
-        {
-          type: 'tool_result',
-          tool_use_id: 'toolu_3',
-          content: 'line oneline two',
-        },
-      ],
-    })
-  })
-
-  it('parses a user entry with a plain text block (echo/direct input)', () => {
-    const line = JSON.stringify({
-      type: 'user',
-      message: { content: [{ type: 'text', text: 'continue please' }] },
-    })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'user',
-      content: [{ type: 'text', text: 'continue please' }],
-    })
-  })
-
-  it('returns ignored for unknown top-level types', () => {
-    const line = JSON.stringify({ type: 'system', content: 'noop' })
-    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
-  })
-
-  it('returns undefined and warns on invalid JSON', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    expect(parseJsonlLine('{not valid json')).toBeUndefined()
-    expect(warn).toHaveBeenCalledOnce()
-    warn.mockRestore()
-  })
-
-  it('parses an agent-name entry', () => {
-    const line = JSON.stringify({
-      type: 'agent-name',
-      agentName: 'auth-refactor',
+      type: 'mode',
+      mode: 'default',
       sessionId: 'session-1',
     })
     expect(parseJsonlLine(line)).toEqual({
-      kind: 'agent-name',
-      agentName: 'auth-refactor',
-    })
-  })
-
-  it('ignores an agent-name entry with a non-string agentName', () => {
-    const line = JSON.stringify({ type: 'agent-name', agentName: 123 })
-    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
-  })
-
-  it('ignores an agent-name entry with an empty agentName', () => {
-    const line = JSON.stringify({ type: 'agent-name', agentName: '' })
-    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
-  })
-
-  it('parses an ai-title entry', () => {
-    const line = JSON.stringify({
-      type: 'ai-title',
-      aiTitle: 'Git workflow setup with master branch',
+      _kind: 'known',
+      type: 'mode',
+      mode: 'default',
       sessionId: 'session-1',
     })
-    expect(parseJsonlLine(line)).toEqual({
-      kind: 'ai-title',
-      aiTitle: 'Git workflow setup with master branch',
-    })
   })
 
-  it('ignores an ai-title entry with a non-string aiTitle', () => {
-    const line = JSON.stringify({ type: 'ai-title', aiTitle: null })
-    expect(parseJsonlLine(line)).toEqual({ kind: 'ignored' })
+  it('returns undefined for an empty line', () => {
+    expect(parseJsonlLine('')).toBeUndefined()
+  })
+
+  it('returns undefined for a whitespace-only line', () => {
+    expect(parseJsonlLine(' '.repeat(3))).toBeUndefined()
+  })
+
+  it('returns a LineParseError for invalid JSON', () => {
+    const result = parseJsonlLine('{not valid json')
+    expect(result?._kind).toBe('error')
+  })
+
+  it('returns an UnknownEntry for an unrecognized top-level type', () => {
+    const result = parseJsonlLine(
+      JSON.stringify({ type: 'totally-unknown-type' })
+    )
+    expect(result?._kind).toBe('unknown')
   })
 })

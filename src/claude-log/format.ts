@@ -1,4 +1,9 @@
-import type { AssistantContentBlock, UserContentBlock } from './parse'
+import type {
+  AssistantContentBlock,
+  ToolResultContentBlock,
+  UserContentBlock,
+  UserMessage,
+} from 'claude-code-jsonl-parser'
 
 /** A single unit of Discord output derived from one or more JSONL content blocks. */
 export type PostItem =
@@ -138,17 +143,22 @@ function countDiffLines(text: string): number {
   return text.length > 0 ? countLines(text) : 0
 }
 
+/** Treats `type: 'tool_use'`'s `input` (`unknown` in the library) as a plain object if it is one, or an empty object otherwise. */
+function asInputRecord(input: unknown): Record<string, unknown> {
+  return typeof input === 'object' && input !== null && !Array.isArray(input)
+    ? (input as Record<string, unknown>)
+    : {}
+}
+
 /** Formats a single `tool_use` block into a header-line PostItem, appending an added/removed line count for Edit/Write. */
-function formatToolUse(block: {
-  name: string
-  input: Record<string, unknown>
-}): PostItem[] {
-  const summary = `⏺ ${block.name}(${buildToolSummary(block.name, block.input)})`
+function formatToolUse(block: { name: string; input: unknown }): PostItem[] {
+  const input = asInputRecord(block.input)
+  const summary = `⏺ ${block.name}(${buildToolSummary(block.name, input)})`
   if (block.name === 'Edit') {
     const oldString =
-      typeof block.input.old_string === 'string' ? block.input.old_string : ''
+      typeof input.old_string === 'string' ? input.old_string : ''
     const newString =
-      typeof block.input.new_string === 'string' ? block.input.new_string : ''
+      typeof input.new_string === 'string' ? input.new_string : ''
     const added = countDiffLines(newString)
     const removed = countDiffLines(oldString)
     return [
@@ -159,8 +169,7 @@ function formatToolUse(block: {
     ]
   }
   if (block.name === 'Write') {
-    const content =
-      typeof block.input.content === 'string' ? block.input.content : ''
+    const content = typeof input.content === 'string' ? input.content : ''
     const added = countDiffLines(content)
     return [
       {
@@ -172,46 +181,81 @@ function formatToolUse(block: {
   return [{ kind: 'messages', texts: [truncateToMessageLimit(summary)] }]
 }
 
+/** Formats a single known assistant content block into zero or more PostItems. */
+function formatAssistantBlock(
+  block: Extract<AssistantContentBlock, { _kind: 'known' }>
+): PostItem[] {
+  switch (block.type) {
+    case 'thinking': {
+      return [{ kind: 'typing' }]
+    }
+    case 'text': {
+      return textToItems(block.text)
+    }
+    case 'tool_use': {
+      return formatToolUse(block)
+    }
+    default: {
+      // A known block type that is neither thinking/text/tool_use (added by
+      // the library in the future) is intentionally ignored, same as an
+      // unknown block — this avoids silently misrendering a future block
+      // type as a tool_use summary.
+      return []
+    }
+  }
+}
+
 /** Converts an assistant entry's content blocks into Discord PostItems, in order. */
 export function formatAssistantEntry(
   content: AssistantContentBlock[]
 ): PostItem[] {
   const items: PostItem[] = []
   for (const block of content) {
-    if (block.type === 'thinking') {
-      items.push({ kind: 'typing' })
-    } else if (block.type === 'text') {
-      items.push(...textToItems(block.text))
-    } else {
-      items.push(...formatToolUse(block))
-    }
+    if (block._kind === 'unknown') continue
+    items.push(...formatAssistantBlock(block))
   }
   return items
 }
 
+/** Normalizes `tool_result`'s `content` (string or array) into a string made by concatenating only `text` blocks. `image`/`tool_reference`/`unknown` blocks are ignored (matching the existing behavior). */
+function extractToolResultText(
+  content: string | ToolResultContentBlock[]
+): string {
+  if (typeof content === 'string') return content
+  return content
+    .map((block) =>
+      block._kind !== 'unknown' && block.type === 'text' ? block.text : ''
+    )
+    .join('')
+}
+
 /**
- * Converts a user entry's content blocks into Discord PostItems, in order.
- * `isEcho` determines whether a plain-text block matches an unconsumed
- * Discord-originated `input_queue` entry and should therefore be skipped
- * (it is already visible in Discord as the original message).
+ * Converts a user entry's content into Discord PostItems, in order.
+ * A plain string `content` is normalized into a single text block before
+ * processing. `isEcho` determines whether a plain-text block matches an
+ * unconsumed Discord-originated `input_queue` entry and should therefore be
+ * skipped (it is already visible in Discord as the original message).
  */
 export function formatUserEntry(
-  content: UserContentBlock[],
+  content: UserMessage['content'],
   isEcho: (text: string) => boolean
 ): PostItem[] {
+  const blocks: UserContentBlock[] =
+    typeof content === 'string'
+      ? [{ _kind: 'known', type: 'text', text: content }]
+      : content
   const items: PostItem[] = []
-  for (const block of content) {
+  for (const block of blocks) {
+    if (block._kind === 'unknown') continue
     if (block.type === 'tool_result') {
+      const text = extractToolResultText(block.content)
       if (block.is_error === true) {
         items.push({
           kind: 'messages',
-          texts: [`⚠️ Error ${buildResultSummary(block.content)}`],
+          texts: [`⚠️ Error ${buildResultSummary(text)}`],
         })
-      } else if (block.content.length > 0) {
-        items.push({
-          kind: 'messages',
-          texts: [buildResultSummary(block.content)],
-        })
+      } else if (text.length > 0) {
+        items.push({ kind: 'messages', texts: [buildResultSummary(text)] })
       }
     } else if (!isEcho(block.text)) {
       items.push(...textToItems(block.text))

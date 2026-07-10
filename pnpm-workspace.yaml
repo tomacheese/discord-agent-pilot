@@ -6,3 +6,9 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+# claude-code-jsonl-parser@0.1.0 was just published and its automatic
+# minimumReleaseAge cooling-off period would otherwise block installation;
+# excluded here after manually reviewing the package (see the migration
+# plan/spec for Issue #19).
+minimumReleaseAgeExclude:
+  - claude-code-jsonl-parser@0.1.0

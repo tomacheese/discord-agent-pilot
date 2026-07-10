@@ -310,22 +310,61 @@ async function processLine(
   lineText: string,
   offsetAfter: number
 ): Promise<void> {
-  const parsed = parseJsonlLine(lineText)
-  if (!parsed || parsed.kind === 'ignored') {
+  // Centralizes the `updateJsonlOffset(dependencies.db, session.id,
+  // session.jsonlPath, offsetAfter)` call repeated across this function's
+  // early-return branches, so a future edit can't drop one of the four
+  // arguments (as previously happened on two of these call-sites; see
+  // Issue #19's migration PR review).
+  const advanceOffset = (): void => {
     updateJsonlOffset(
       dependencies.db,
       session.id,
       session.jsonlPath,
       offsetAfter
     )
+  }
+  const parsed = parseJsonlLine(lineText)
+  if (!parsed || parsed._kind === 'error') {
+    if (parsed) {
+      console.warn(
+        `Failed to parse JSONL line as JSON in ${session.jsonlPath}:`,
+        parsed.message
+      )
+    }
+    advanceOffset()
     return
   }
-  if (parsed.kind === 'agent-name' || parsed.kind === 'ai-title') {
+  if (parsed._kind === 'unknown') {
+    if (parsed.typeHint) {
+      console.warn(
+        `JSONL line matched known type "${parsed.typeHint}" but shape did not conform in ${session.jsonlPath}:`,
+        parsed.reason
+      )
+    }
+    advanceOffset()
+    return
+  }
+  if (
+    parsed.type !== 'assistant' &&
+    parsed.type !== 'user' &&
+    parsed.type !== 'agent-name' &&
+    parsed.type !== 'ai-title'
+  ) {
+    advanceOffset()
+    return
+  }
+  if (parsed.type === 'agent-name' || parsed.type === 'ai-title') {
     const candidateSource: ThreadNameSource =
-      parsed.kind === 'agent-name' ? 'agent-name' : 'ai-title'
+      parsed.type === 'agent-name' ? 'agent-name' : 'ai-title'
     const candidateTitle =
-      parsed.kind === 'agent-name' ? parsed.agentName : parsed.aiTitle
-    if (shouldApplyThreadName(session.threadNameSource, candidateSource)) {
+      parsed.type === 'agent-name' ? parsed.agentName : parsed.aiTitle
+    // The library's type guard for agent-name/ai-title only checks that the
+    // field is a string, not that it is non-empty; that check must be kept
+    // here to preserve the previous behavior of ignoring empty titles.
+    if (
+      candidateTitle !== '' &&
+      shouldApplyThreadName(session.threadNameSource, candidateSource)
+    ) {
       try {
         await thread.setName(truncateThreadTitle(candidateTitle))
       } catch (error) {
@@ -338,7 +377,7 @@ async function processLine(
           `Failed to set thread name for session ${session.id}; skipping:`,
           error
         )
-        updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+        advanceOffset()
         return
       }
       updateThreadNameSource(dependencies.db, session.id, candidateSource)
@@ -349,20 +388,15 @@ async function processLine(
       // ai-title).
       session.threadNameSource = candidateSource
     }
-    updateJsonlOffset(
-      dependencies.db,
-      session.id,
-      session.jsonlPath,
-      offsetAfter
-    )
+    advanceOffset()
     return
   }
   const pendingConsumedIds: string[] = []
   const items =
-    parsed.kind === 'assistant'
-      ? formatAssistantEntry(parsed.content)
+    parsed.type === 'assistant'
+      ? formatAssistantEntry(parsed.message.content)
       : formatUserEntry(
-          parsed.content,
+          parsed.message.content,
           makeEchoMatcher(
             dependencies.db,
             session.id,
@@ -380,7 +414,7 @@ async function processLine(
       `Failed to post line for session ${session.id}; skipping line:`,
       error
     )
-    updateJsonlOffset(dependencies.db, session.id, offsetAfter)
+    advanceOffset()
     return
   }
   // Only merge matched echo IDs into the shared set once the whole line's
@@ -388,7 +422,7 @@ async function processLine(
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
   }
-  updateJsonlOffset(dependencies.db, session.id, session.jsonlPath, offsetAfter)
+  advanceOffset()
 }
 
 /**
