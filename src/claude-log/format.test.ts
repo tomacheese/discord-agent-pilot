@@ -1,22 +1,38 @@
 import { describe, expect, it } from 'vitest'
+import type {
+  AssistantContentBlock,
+  ToolResultContentBlock,
+  UserContentBlock,
+} from 'claude-code-jsonl-parser'
 import { formatAssistantEntry, formatUserEntry } from './format'
 
 describe('formatAssistantEntry', () => {
   it('converts a thinking block into a typing item', () => {
-    expect(formatAssistantEntry([{ type: 'thinking' }])).toEqual([
-      { kind: 'typing' },
-    ])
+    const blocks: AssistantContentBlock[] = [
+      {
+        _kind: 'known',
+        type: 'thinking',
+        thinking: 'let me think',
+        signature: 'sig',
+      },
+    ]
+    expect(formatAssistantEntry(blocks)).toEqual([{ kind: 'typing' }])
   })
 
   it('converts a short text block into a single-message item', () => {
-    expect(
-      formatAssistantEntry([{ type: 'text', text: 'Hello there' }])
-    ).toEqual([{ kind: 'messages', texts: ['Hello there'] }])
+    const blocks: AssistantContentBlock[] = [
+      { _kind: 'known', type: 'text', text: 'Hello there' },
+    ]
+    expect(formatAssistantEntry(blocks)).toEqual([
+      { kind: 'messages', texts: ['Hello there'] },
+    ])
   })
 
   it('splits a text block longer than 2000 characters into multiple messages', () => {
     const text = 'a'.repeat(4500)
-    const result = formatAssistantEntry([{ type: 'text', text }])
+    const result = formatAssistantEntry([
+      { _kind: 'known', type: 'text', text },
+    ])
     expect(result).toHaveLength(1)
     const item = result[0]
     if (item.kind !== 'messages') throw new Error('expected messages item')
@@ -28,7 +44,9 @@ describe('formatAssistantEntry', () => {
 
   it('caps text at 5 messages and appends a truncation notice to the last one', () => {
     const text = 'a'.repeat(2000 * 6)
-    const result = formatAssistantEntry([{ type: 'text', text }])
+    const result = formatAssistantEntry([
+      { _kind: 'known', type: 'text', text },
+    ])
     const item = result[0]
     if (item.kind !== 'messages') throw new Error('expected messages item')
     expect(item.texts).toHaveLength(5)
@@ -41,6 +59,7 @@ describe('formatAssistantEntry', () => {
   it('formats a Bash tool_use with command and description', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_1',
         name: 'Bash',
@@ -55,6 +74,7 @@ describe('formatAssistantEntry', () => {
   it('formats a Read tool_use with offset/limit', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_2',
         name: 'Read',
@@ -72,6 +92,7 @@ describe('formatAssistantEntry', () => {
   it('formats a Grep tool_use with pattern and path', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_3',
         name: 'Grep',
@@ -86,6 +107,7 @@ describe('formatAssistantEntry', () => {
   it('falls back to a generic key=value summary for unknown tools', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_4',
         name: 'WebSearch',
@@ -101,6 +123,7 @@ describe('formatAssistantEntry', () => {
     const longValue = 'x'.repeat(150)
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_5',
         name: 'UnknownTool',
@@ -116,6 +139,7 @@ describe('formatAssistantEntry', () => {
     const longCommand = 'echo ' + 'a'.repeat(3000)
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_10',
         name: 'Bash',
@@ -135,6 +159,7 @@ describe('formatAssistantEntry', () => {
     const longPath = '/tmp/' + 'a'.repeat(3000) + '.ts'
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_11',
         name: 'Edit',
@@ -159,6 +184,7 @@ describe('formatAssistantEntry', () => {
   it('formats an Edit tool_use as a single header line with added/removed line counts', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_6',
         name: 'Edit',
@@ -177,6 +203,7 @@ describe('formatAssistantEntry', () => {
   it('formats a Write tool_use as a single header line with an added line count', () => {
     const result = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_7',
         name: 'Write',
@@ -191,6 +218,7 @@ describe('formatAssistantEntry', () => {
   it('reports +0/-0 for an Edit that fully deletes or fully adds content', () => {
     const fullDelete = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_8',
         name: 'Edit',
@@ -207,6 +235,7 @@ describe('formatAssistantEntry', () => {
 
     const fullAdd = formatAssistantEntry([
       {
+        _kind: 'known',
         type: 'tool_use',
         id: 'toolu_9',
         name: 'Edit',
@@ -221,12 +250,39 @@ describe('formatAssistantEntry', () => {
       { kind: 'messages', texts: ['⏺ Edit(/tmp/foo.ts) (+2 -0)'] },
     ])
   })
+
+  it('ignores an unknown content block instead of treating it as tool_use', () => {
+    const blocks: AssistantContentBlock[] = [
+      { _kind: 'unknown', raw: { type: 'future-block', data: 'x' } },
+    ]
+    expect(formatAssistantEntry(blocks)).toEqual([])
+  })
+
+  it('falls back to an empty input object when tool_use.input is not a plain object', () => {
+    const result = formatAssistantEntry([
+      {
+        _kind: 'known',
+        type: 'tool_use',
+        id: 'toolu_12',
+        name: 'WebSearch',
+        input: 'not-an-object',
+      },
+    ])
+    expect(result).toEqual([{ kind: 'messages', texts: ['⏺ WebSearch()'] }])
+  })
 })
 
 describe('formatUserEntry', () => {
   it('summarizes a normal tool_result as a line/character count instead of its full content', () => {
     const result = formatUserEntry(
-      [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'total 0' }],
+      [
+        {
+          _kind: 'known',
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: 'total 0',
+        },
+      ],
       () => false
     )
     expect(result).toEqual([
@@ -236,7 +292,14 @@ describe('formatUserEntry', () => {
 
   it('omits a normal tool_result entirely when its content is empty', () => {
     const result = formatUserEntry(
-      [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '' }],
+      [
+        {
+          _kind: 'known',
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: '',
+        },
+      ],
       () => false
     )
     expect(result).toEqual([])
@@ -246,6 +309,7 @@ describe('formatUserEntry', () => {
     const result = formatUserEntry(
       [
         {
+          _kind: 'known',
           type: 'tool_result',
           tool_use_id: 'toolu_2',
           content: 'command not found',
@@ -263,6 +327,7 @@ describe('formatUserEntry', () => {
     const result = formatUserEntry(
       [
         {
+          _kind: 'known',
           type: 'tool_result',
           tool_use_id: 'toolu_2',
           content: '',
@@ -278,7 +343,7 @@ describe('formatUserEntry', () => {
 
   it('posts a text block that does not match input_queue', () => {
     const result = formatUserEntry(
-      [{ type: 'text', text: 'typed directly in tmux' }],
+      [{ _kind: 'known', type: 'text', text: 'typed directly in tmux' }],
       () => false
     )
     expect(result).toEqual([
@@ -288,9 +353,50 @@ describe('formatUserEntry', () => {
 
   it('skips a text block that matches an unconsumed input_queue entry', () => {
     const result = formatUserEntry(
-      [{ type: 'text', text: 'from discord' }],
+      [{ _kind: 'known', type: 'text', text: 'from discord' }],
       (text) => text === 'from discord'
     )
     expect(result).toEqual([])
+  })
+
+  it('ignores an unknown content block', () => {
+    const blocks: UserContentBlock[] = [
+      { _kind: 'unknown', raw: { type: 'future-block' } },
+    ]
+    expect(formatUserEntry(blocks, () => false)).toEqual([])
+  })
+
+  it('normalizes an array-form tool_result content, keeping only text blocks and ignoring image/tool_reference blocks', () => {
+    const content: ToolResultContentBlock[] = [
+      { _kind: 'known', type: 'text', text: 'line one' },
+      {
+        _kind: 'known',
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'AAA' },
+      },
+      { _kind: 'known', type: 'tool_reference', tool_name: 'Bash' },
+      { _kind: 'known', type: 'text', text: 'line two' },
+    ]
+    const result = formatUserEntry(
+      [
+        {
+          _kind: 'known',
+          type: 'tool_result',
+          tool_use_id: 'toolu_3',
+          content,
+        },
+      ],
+      () => false
+    )
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['(結果: 1行, 16文字)'] },
+    ])
+  })
+
+  it('treats a string message.content as a single text-equivalent block', () => {
+    const result = formatUserEntry('typed directly in tmux', () => false)
+    expect(result).toEqual([
+      { kind: 'messages', texts: ['typed directly in tmux'] },
+    ])
   })
 })
