@@ -9,7 +9,8 @@ services:
     volumes:
       - /proc:/host/proc:ro
       - /tmp/tmux-1000:/tmp/tmux-host # ホストのtmuxソケットディレクトリ(UIDに合わせて変更)。Unixドメインソケットへのconnect()には書き込み権限が必要なため:roにしない
-      - ~/.claude:/host/claude-config:ro # CLAUDE_CONFIG_DIR。configDirsのhostPath/containerPathの組ごとに1マウントが必要
+      - ${HOME}/.claude:/host/claude-config:ro # claude.defaultConfigDir。configDirs/defaultConfigDirのhostPath/containerPathの組ごとに1マウントが必要。config.yaml側のhostPathは`~`展開されないため絶対パスで指定し、ここも`~`ではなく${HOME}で明示的に展開する
+      # - /home/user/.claude-work:/host/claude-config-work:ro # config.yamlのconfigDirsに追加のCLAUDE_CONFIG_DIRを許可した場合、対応するcontainerPathをこのように追加でマウントする
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/data
     security_opt:
