@@ -20,10 +20,9 @@ import {
 } from './core/input-delivery-worker'
 import {
   findSessionIdsWithPendingInput,
-  insertPendingInput,
   resetStaleSendingInputs,
 } from './registry/input-queue'
-import { findSessionByThreadId } from './registry/sessions'
+import { handleAllowedMessage } from './core/allowed-message-handler'
 import { defaultExec, resolveTmuxSocketPath } from './tmux/list-sessions'
 
 const configPath = process.env.CONFIG_PATH ?? './config.yaml'
@@ -44,18 +43,12 @@ async function main(): Promise<void> {
 
   const client = createDiscordClient(config, {
     onAllowedMessage: (message) => {
-      const session = findSessionByThreadId(database, message.channelId)
-      if (!session || session.status === 'closed') return
-      const inputQueueId = insertPendingInput(
+      handleAllowedMessage(
         database,
-        session.id,
-        'discord',
+        inputDeliveryDependencies,
+        message.channelId,
         message.content
       )
-      console.info(
-        `Queued input_queue row ${inputQueueId} for session ${session.id}`
-      )
-      triggerInputDelivery(inputDeliveryDependencies, session.id)
     },
   })
 
