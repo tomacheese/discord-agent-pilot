@@ -6,3 +6,5 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+minimumReleaseAgeExclude:
+  - claude-code-jsonl-parser@0.1.0
