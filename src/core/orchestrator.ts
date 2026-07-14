@@ -232,38 +232,72 @@ async function processPane(
 }
 
 /**
- * Marks every open session whose Claude process has exited as `'closed'`,
- * and archives its Discord thread when the parent channel is a forum (see
- * Issue #31's scope decision: text-channel threads are not archived).
+ * Marks `session` closed (and archives its Discord thread, for a forum
+ * parent channel) if its Claude process has exited; leaves it untouched
+ * otherwise. See Issue #31's scope decision: text-channel threads are not
+ * archived.
+ *
+ * Liveness is checked via the cache first, mirroring `processPane`'s
+ * `resolvedPanes` fast path: `isClaudeProcessAlive` (a single `comm` file
+ * read) confirms a still-live cached pid without paying for a full `/proc`
+ * tree walk. `findClaudeProcessPid` (the tree walk) only runs as a fallback
+ * when the cache is stale or missing.
  *
  * The DB close is authoritative regardless of the Discord API outcome: an
  * `archiveThread` failure is logged and skipped so it never blocks the
- * session from being marked closed or the cycle from continuing to the next
- * session.
+ * session from being marked closed.
+ */
+async function closeSessionIfExited(
+  dependencies: OrchestratorDependencies,
+  config: Config,
+  session: SessionRow
+): Promise<void> {
+  const cachedClaudePid = dependencies.resolvedPanes.get(
+    paneKey(session.tmuxSession, session.tmuxPanePid)
+  )
+  const claudePid =
+    cachedClaudePid !== undefined &&
+    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
+      ? cachedClaudePid
+      : await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
+  if (claudePid) return
+
+  markSessionClosed(dependencies.db, session.id)
+
+  if (config.parentChannel.type !== 'forum') return
+  try {
+    await dependencies.parentChannel.archiveThread?.(session.threadId)
+  } catch (error) {
+    console.error(
+      `Failed to archive thread ${session.threadId} for session ${session.id}:`,
+      error
+    )
+  }
+}
+
+/**
+ * Runs `closeSessionIfExited` for every open session. Sessions are checked
+ * independently via `Promise.allSettled`, mirroring `runDetectionCycle`'s
+ * pane processing below: a single session whose liveness check throws must
+ * not block the rest of this cycle's open sessions from being checked.
  */
 async function closeExitedSessions(
   dependencies: OrchestratorDependencies,
   config: Config
 ): Promise<void> {
   const openSessions = findOpenSessions(dependencies.db)
-  for (const session of openSessions) {
-    const claudePid = await findClaudeProcessPid(
-      dependencies.procRoot,
-      session.tmuxPanePid
+  const results = await Promise.allSettled(
+    openSessions.map((session) =>
+      closeSessionIfExited(dependencies, config, session)
     )
-    if (claudePid) continue
-
-    markSessionClosed(dependencies.db, session.id)
-
-    if (config.parentChannel.type !== 'forum') continue
-    try {
-      await dependencies.parentChannel.archiveThread?.(session.threadId)
-    } catch (error) {
-      console.error(
-        `Failed to archive thread ${session.threadId} for session ${session.id}:`,
-        error
-      )
-    }
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const session = openSessions[index]
+    console.error(
+      `Failed to check exit status for session ${session.id}:`,
+      result.reason
+    )
   }
 }
 

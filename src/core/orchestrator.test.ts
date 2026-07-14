@@ -416,9 +416,7 @@ describe('closing exited sessions', () => {
 
     await runDetectionCycle(dependencies, makeConfig())
 
-    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
-      'closed'
-    )
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
   })
 
   it('leaves a session open when its Claude process is still alive', async () => {
@@ -460,9 +458,7 @@ describe('closing exited sessions', () => {
     await runDetectionCycle(dependencies, config)
 
     expect(archiveThread).not.toHaveBeenCalled()
-    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
-      'closed'
-    )
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
   })
 
   it('still marks the session closed and does not throw when archiveThread rejects', async () => {
@@ -477,8 +473,6 @@ describe('closing exited sessions', () => {
     await expect(
       runDetectionCycle(dependencies, makeConfig())
     ).resolves.not.toThrow()
-    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
-      'closed'
-    )
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
   })
 })
