@@ -3,8 +3,10 @@ import type { Config } from '../config/schema'
 import type { ParentChannel } from '../discord/parent-channel'
 import { buildFallbackThreadTitle } from '../discord/thread-title'
 import {
+  findOpenSessions,
   findSessionById,
   insertSession,
+  markSessionClosed,
   type SessionRow,
 } from '../registry/sessions'
 import { listAllTmuxPanes } from '../tmux/list-sessions'
@@ -230,6 +232,42 @@ async function processPane(
 }
 
 /**
+ * Marks every open session whose Claude process has exited as `'closed'`,
+ * and archives its Discord thread when the parent channel is a forum (see
+ * Issue #31's scope decision: text-channel threads are not archived).
+ *
+ * The DB close is authoritative regardless of the Discord API outcome: an
+ * `archiveThread` failure is logged and skipped so it never blocks the
+ * session from being marked closed or the cycle from continuing to the next
+ * session.
+ */
+async function closeExitedSessions(
+  dependencies: OrchestratorDependencies,
+  config: Config
+): Promise<void> {
+  const openSessions = findOpenSessions(dependencies.db)
+  for (const session of openSessions) {
+    const claudePid = await findClaudeProcessPid(
+      dependencies.procRoot,
+      session.tmuxPanePid
+    )
+    if (claudePid) continue
+
+    markSessionClosed(dependencies.db, session.id)
+
+    if (config.parentChannel.type !== 'forum') continue
+    try {
+      await dependencies.parentChannel.archiveThread?.(session.threadId)
+    } catch (error) {
+      console.error(
+        `Failed to archive thread ${session.threadId} for session ${session.id}:`,
+        error
+      )
+    }
+  }
+}
+
+/**
  * Runs one tmux detection / sessionId resolution / registration cycle.
  *
  * Panes are processed independently via `Promise.allSettled` rather than
@@ -258,4 +296,5 @@ export async function runDetectionCycle(
       result.reason
     )
   }
+  await closeExitedSessions(dependencies, config)
 }
