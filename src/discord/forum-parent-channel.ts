@@ -11,4 +11,10 @@ export class ForumParentChannel implements ParentChannel {
       message: { content: `Session thread: ${title}` },
     })
   }
+
+  async archiveThread(threadId: string): Promise<void> {
+    const thread = await this.channel.threads.fetch(threadId)
+    if (!thread) return
+    await thread.setArchived(true)
+  }
 }

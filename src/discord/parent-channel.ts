@@ -6,6 +6,13 @@ import { TextParentChannel } from './text-parent-channel'
 export interface ParentChannel {
   /** Creates a new thread named `title` for a session. */
   createSessionThread(title: string): Promise<ThreadChannel>
+  /**
+   * Archives the thread identified by `threadId`. Optional: only
+   * `ForumParentChannel` implements this today, since Issue #31 scopes
+   * auto-archive to forum parent channels; `TextParentChannel` leaves this
+   * undefined.
+   */
+  archiveThread?(threadId: string): Promise<void>
 }
 
 /**
