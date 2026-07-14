@@ -159,3 +159,31 @@ export function getThreadNameSource(
   }
   return row.threadNameSource
 }
+
+/**
+ * Returns every session row whose `status` is not `'closed'`.
+ */
+export function findOpenSessions(db: Database.Database): SessionRow[] {
+  return db
+    .prepare(
+      `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
+              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
+              tmux_pane_id AS tmuxPaneId,
+              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
+              jsonl_offset AS jsonlOffset, status,
+              thread_name_source AS threadNameSource,
+              created_at AS createdAt, updated_at AS updatedAt
+       FROM sessions WHERE status != 'closed'`
+    )
+    .all() as SessionRow[]
+}
+
+/** Marks `sessionId`'s `status` as `'closed'`. */
+export function markSessionClosed(
+  db: Database.Database,
+  sessionId: string
+): void {
+  db.prepare("UPDATE sessions SET status = 'closed' WHERE id = ?").run(
+    sessionId
+  )
+}

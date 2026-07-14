@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { Config } from '../config/schema'
 import { openRegistryDb } from '../registry/db'
-import { findSessionById } from '../registry/sessions'
+import {
+  findSessionById,
+  insertSession,
+  type SessionRow,
+} from '../registry/sessions'
 import { AmbiguityTracker } from './ambiguity'
 import {
   runDetectionCycle,
@@ -79,6 +83,26 @@ function makeDependencies(): {
     registeringSessionIds: new Set(),
   }
   return { dependencies, createSessionThread, promptSend }
+}
+
+function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
+  return {
+    id: 'session-1',
+    threadId: 'thread-1',
+    parentChannelId: 'channel-1',
+    tmuxSession: 'tmux-1',
+    tmuxPanePid: '100',
+    tmuxPaneId: '%0',
+    cwd: '/mnt/ssd/repos/example',
+    configDir: '/host/claude-config',
+    jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    jsonlOffset: 0,
+    status: 'discovered',
+    threadNameSource: 'fallback',
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...overrides,
+  }
 }
 
 beforeEach(() => {
@@ -380,5 +404,75 @@ describe('runDetectionCycle', () => {
 
     expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     error.mockRestore()
+  })
+})
+
+describe('closing exited sessions', () => {
+  it('marks a session closed when its Claude process has exited', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    const { dependencies } = makeDependencies()
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+  })
+
+  it('leaves a session open when its Claude process is still alive', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    const { dependencies } = makeDependencies()
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
+      'discovered'
+    )
+  })
+
+  it('archives the Discord thread for a forum parent channel when a session closes', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    const { dependencies } = makeDependencies()
+    const archiveThread = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.archiveThread = archiveThread
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(archiveThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('does not call archiveThread when the parent channel type is text', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    const { dependencies } = makeDependencies()
+    const archiveThread = vi.fn()
+    dependencies.parentChannel.archiveThread = archiveThread
+    insertSession(dependencies.db, makeSessionRow())
+    const config = makeConfig()
+    config.parentChannel = { type: 'text', id: 'channel-1' }
+
+    await runDetectionCycle(dependencies, config)
+
+    expect(archiveThread).not.toHaveBeenCalled()
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+  })
+
+  it('still marks the session closed and does not throw when archiveThread rejects', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    const { dependencies } = makeDependencies()
+    dependencies.parentChannel.archiveThread = vi
+      .fn()
+      .mockRejectedValue(new Error('Discord API error'))
+    insertSession(dependencies.db, makeSessionRow())
+
+    await expect(
+      runDetectionCycle(dependencies, makeConfig())
+    ).resolves.not.toThrow()
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
   })
 })

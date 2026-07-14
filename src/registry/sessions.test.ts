@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { openRegistryDb } from './db'
 import {
+  findOpenSessions,
   findSessionById,
   findSessionByThreadId,
   getThreadNameSource,
   hasTmuxPane,
   insertSession,
+  markSessionClosed,
   updateJsonlPath,
   updateThreadNameSource,
   type SessionRow,
@@ -126,5 +128,47 @@ describe('findSessionByThreadId', () => {
     const db = openRegistryDb(':memory:')
     insertSession(db, makeRow())
     expect(findSessionByThreadId(db, 'unknown-thread')).toBeUndefined()
+  })
+})
+
+describe('findOpenSessions', () => {
+  it('returns only sessions whose status is not "closed"', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ id: 'session-1', status: 'discovered' }))
+    insertSession(db, makeRow({ id: 'session-2', status: 'closed' }))
+
+    const open = findOpenSessions(db)
+
+    expect(open.map((row) => row.id)).toEqual(['session-1'])
+  })
+
+  it('returns an empty array when every session is closed', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ id: 'session-1', status: 'closed' }))
+
+    expect(findOpenSessions(db)).toEqual([])
+  })
+})
+
+describe('markSessionClosed', () => {
+  it('updates only the status column for the given sessionId', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+
+    markSessionClosed(db, 'session-1')
+
+    const found = findSessionById(db, 'session-1')
+    expect(found).toEqual({ ...makeRow(), status: 'closed' })
+  })
+
+  it('does not affect other sessions', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ id: 'session-1' }))
+    insertSession(db, makeRow({ id: 'session-2', threadId: 'thread-2' }))
+
+    markSessionClosed(db, 'session-1')
+
+    expect(findSessionById(db, 'session-1')?.status).toBe('closed')
+    expect(findSessionById(db, 'session-2')?.status).toBe('discovered')
   })
 })
