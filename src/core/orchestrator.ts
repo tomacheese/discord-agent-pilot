@@ -240,16 +240,38 @@ async function processPane(
 }
 
 /**
+ * Resolves whether `session`'s Claude Code process is still alive, via the
+ * same cache-first check `processPane` uses for its `resolvedPanes` fast
+ * path: `isClaudeProcessAlive` (a single `comm` file read) confirms a
+ * still-live cached pid without paying for a full `/proc` tree walk;
+ * `findClaudeProcessPid` (the tree walk) only runs as a fallback when the
+ * cache is stale or missing. Shared by `closeSessionIfExited` and
+ * `updateThreadStatuses` so each open session is only probed once per
+ * detection cycle instead of twice.
+ */
+async function isSessionAlive(
+  dependencies: OrchestratorDependencies,
+  session: SessionRow
+): Promise<boolean> {
+  const cachedClaudePid = dependencies.resolvedPanes.get(
+    paneKey(session.tmuxSession, session.tmuxPanePid)
+  )
+  if (
+    cachedClaudePid !== undefined &&
+    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
+  ) {
+    return true
+  }
+  return Boolean(
+    await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
+  )
+}
+
+/**
  * Marks `session` closed (and archives its Discord thread, for a forum
  * parent channel) if its Claude process has exited; leaves it untouched
  * otherwise. See Issue #31's scope decision: text-channel threads are not
  * archived.
- *
- * Liveness is checked via the cache first, mirroring `processPane`'s
- * `resolvedPanes` fast path: `isClaudeProcessAlive` (a single `comm` file
- * read) confirms a still-live cached pid without paying for a full `/proc`
- * tree walk. `findClaudeProcessPid` (the tree walk) only runs as a fallback
- * when the cache is stale or missing.
  *
  * The DB close is authoritative regardless of the Discord API outcome: an
  * `archiveThread` failure is logged and skipped so it never blocks the
@@ -260,15 +282,7 @@ async function closeSessionIfExited(
   config: Config,
   session: SessionRow
 ): Promise<void> {
-  const cachedClaudePid = dependencies.resolvedPanes.get(
-    paneKey(session.tmuxSession, session.tmuxPanePid)
-  )
-  const claudePid =
-    cachedClaudePid !== undefined &&
-    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
-      ? cachedClaudePid
-      : await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
-  if (claudePid) return
+  if (await isSessionAlive(dependencies, session)) return
 
   markSessionClosed(dependencies.db, session.id)
 
@@ -284,16 +298,17 @@ async function closeSessionIfExited(
 }
 
 /**
- * Runs `closeSessionIfExited` for every open session. Sessions are checked
- * independently via `Promise.allSettled`, mirroring `runDetectionCycle`'s
- * pane processing below: a single session whose liveness check throws must
- * not block the rest of this cycle's open sessions from being checked.
+ * Runs `closeSessionIfExited` for every session in `openSessions`. Sessions
+ * are checked independently via `Promise.allSettled`, mirroring
+ * `runDetectionCycle`'s pane processing below: a single session whose
+ * liveness check throws must not block the rest of this cycle's open
+ * sessions from being checked.
  */
 async function closeExitedSessions(
   dependencies: OrchestratorDependencies,
-  config: Config
+  config: Config,
+  openSessions: SessionRow[]
 ): Promise<void> {
-  const openSessions = findOpenSessions(dependencies.db)
   const results = await Promise.allSettled(
     openSessions.map((session) =>
       closeSessionIfExited(dependencies, config, session)
@@ -313,40 +328,28 @@ async function closeExitedSessions(
  * Updates each open forum session's thread starter message to reflect its
  * current status (running/stopped, most recent action, elapsed time).
  * No-op entirely when the parent channel is not a forum, since only forum
- * threads have a starter message (see Issue #34's scope decision).
+ * threads have a starter message.
  *
  * Liveness is checked via the same cache-first pattern as
- * `closeSessionIfExited`. Each session's computed content is only sent to
- * Discord when `dependencies.statusTracker` says it actually changed and
- * enough time has passed since the last edit, keeping this well within
- * Discord's message-edit rate limit even with many open sessions.
+ * `closeSessionIfExited` (see `isSessionAlive`). Each session's computed
+ * content is only sent to Discord when `dependencies.statusTracker` says it
+ * actually changed and enough time has passed since the last edit, keeping
+ * this well within Discord's message-edit rate limit even with many open
+ * sessions.
  */
 async function updateThreadStatuses(
   dependencies: OrchestratorDependencies,
-  config: Config
+  config: Config,
+  openSessions: SessionRow[]
 ): Promise<void> {
   if (config.parentChannel.type !== 'forum') return
 
-  const openSessions = findOpenSessions(dependencies.db)
   const now = Date.now()
   const results = await Promise.allSettled(
     openSessions.map(async (session) => {
-      const cachedClaudePid = dependencies.resolvedPanes.get(
-        paneKey(session.tmuxSession, session.tmuxPanePid)
-      )
-      const isRunning =
-        cachedClaudePid !== undefined &&
-        (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
-          ? true
-          : Boolean(
-              await findClaudeProcessPid(
-                dependencies.procRoot,
-                session.tmuxPanePid
-              )
-            )
+      const isRunning = await isSessionAlive(dependencies, session)
 
       const content = formatThreadStatus({
-        title: buildFallbackThreadTitle(session.cwd, session.tmuxSession),
         isRunning,
         lastActionSummary: session.lastActionSummary,
         elapsedMinutes: Math.floor((now - session.createdAt) / 60_000),
@@ -409,6 +412,7 @@ export async function runDetectionCycle(
       result.reason
     )
   }
-  await closeExitedSessions(dependencies, config)
-  await updateThreadStatuses(dependencies, config)
+  const openSessions = findOpenSessions(dependencies.db)
+  await closeExitedSessions(dependencies, config, openSessions)
+  await updateThreadStatuses(dependencies, config, openSessions)
 }

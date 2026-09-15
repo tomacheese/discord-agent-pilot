@@ -9,7 +9,6 @@ const NO_ACTION_YET_TEXT = '(まだアクションなし)'
 
 /** Input to `formatThreadStatus`: the pieces of a session's current status. */
 export interface ThreadStatusInput {
-  title: string
   isRunning: boolean
   lastActionSummary: string
   elapsedMinutes: number
@@ -45,7 +44,7 @@ export function formatThreadStatus(input: ThreadStatusInput): string {
     input.lastActionSummary.length > 0
       ? input.lastActionSummary
       : NO_ACTION_YET_TEXT
-  const content = `Session thread: ${input.title}\n状態: ${stateLabel} (経過 ${input.elapsedMinutes}分)\n直近: ${action}`
+  const content = `状態: ${stateLabel} (経過 ${input.elapsedMinutes}分)\n直近: ${action}`
   const truncated =
     content.length > STATUS_CONTENT_MAX_LENGTH
       ? content.slice(0, STATUS_CONTENT_MAX_LENGTH) + '…'

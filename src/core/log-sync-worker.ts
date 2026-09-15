@@ -406,10 +406,6 @@ async function processLine(
             pendingConsumedIds
           )
         )
-  const actionSummary = summarizePostItems(items)
-  if (actionSummary !== undefined) {
-    updateLastActionSummary(dependencies.db, session.id, actionSummary)
-  }
   try {
     await postItems(thread, items)
   } catch (error) {
@@ -423,10 +419,16 @@ async function processLine(
     advanceOffset()
     return
   }
-  // Only merge matched echo IDs into the shared set once the whole line's
-  // post has succeeded — see the doc comment on makeEchoMatcher.
+  // Only merge matched echo IDs into the shared set, and persist the action
+  // summary, once the whole line's post has succeeded — see the doc comment
+  // on makeEchoMatcher. Otherwise a failed post would still leave the
+  // starter message claiming an action that was never actually delivered.
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
+  }
+  const actionSummary = summarizePostItems(items)
+  if (actionSummary !== undefined) {
+    updateLastActionSummary(dependencies.db, session.id, actionSummary)
   }
   advanceOffset()
 }

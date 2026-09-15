@@ -29,19 +29,15 @@ describe('summarizePostItems', () => {
 describe('formatThreadStatus', () => {
   it('shows "実行中" and the elapsed minutes for a running session', () => {
     const content = formatThreadStatus({
-      title: 'discord-agent-pilot (main)',
       isRunning: true,
       lastActionSummary: '⏺ Bash(ls -la)',
       elapsedMinutes: 12,
     })
-    expect(content).toBe(
-      'Session thread: discord-agent-pilot (main)\n状態: 実行中 (経過 12分)\n直近: ⏺ Bash(ls -la)'
-    )
+    expect(content).toBe('状態: 実行中 (経過 12分)\n直近: ⏺ Bash(ls -la)')
   })
 
   it('shows "停止中" for a stopped session', () => {
     const content = formatThreadStatus({
-      title: 'discord-agent-pilot (main)',
       isRunning: false,
       lastActionSummary: '⏺ Bash(ls -la)',
       elapsedMinutes: 5,
@@ -51,7 +47,6 @@ describe('formatThreadStatus', () => {
 
   it('shows the no-action placeholder when lastActionSummary is empty', () => {
     const content = formatThreadStatus({
-      title: 'discord-agent-pilot (main)',
       isRunning: true,
       lastActionSummary: '',
       elapsedMinutes: 0,
@@ -61,7 +56,6 @@ describe('formatThreadStatus', () => {
 
   it('truncates the overall content to 300 characters', () => {
     const content = formatThreadStatus({
-      title: 'discord-agent-pilot (main)',
       isRunning: true,
       lastActionSummary: 'x'.repeat(400),
       elapsedMinutes: 1,
