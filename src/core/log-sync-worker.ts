@@ -10,11 +10,13 @@ import {
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
 import {
   updateJsonlPath,
+  updateLastActionSummary,
   updateThreadNameSource,
   type ThreadNameSource,
 } from '../registry/sessions'
 import { findLatestJsonlForSessionId } from '../tmux/session-id-resolver'
 import { truncateThreadTitle } from '../discord/thread-title'
+import { summarizePostItems } from '../discord/thread-status'
 
 /**
  * A single Discord post: plain text and/or file attachments. The union
@@ -404,6 +406,10 @@ async function processLine(
             pendingConsumedIds
           )
         )
+  const actionSummary = summarizePostItems(items)
+  if (actionSummary !== undefined) {
+    updateLastActionSummary(dependencies.db, session.id, actionSummary)
+  }
   try {
     await postItems(thread, items)
   } catch (error) {

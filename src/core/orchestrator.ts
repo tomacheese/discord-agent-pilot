@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Config } from '../config/schema'
 import type { ParentChannel } from '../discord/parent-channel'
 import { buildFallbackThreadTitle } from '../discord/thread-title'
+import { formatThreadStatus } from '../discord/thread-status'
 import {
   findOpenSessions,
   findSessionById,
@@ -24,6 +25,10 @@ import {
   promptSessionIdSelection,
   type PromptChannel,
 } from './ambiguity'
+import {
+  THREAD_STATUS_MIN_INTERVAL_MS,
+  ThreadStatusTracker,
+} from './thread-status-tracker'
 
 /** External collaborators `runDetectionCycle` needs, injected for testability. */
 export interface OrchestratorDependencies {
@@ -58,6 +63,8 @@ export interface OrchestratorDependencies {
    * `sessions.id` primary key.
    */
   registeringSessionIds: Set<string>
+  /** Tracks each thread's last-applied starter message content, to skip redundant Discord edits (see `updateThreadStatuses`). */
+  statusTracker: ThreadStatusTracker
 }
 
 /** Builds the `resolvedPanes` cache key identifying a tmux session/pane pair. */
@@ -122,6 +129,7 @@ async function registerSession(
       jsonlOffset: 0,
       status: 'discovered',
       threadNameSource: 'fallback',
+      lastActionSummary: '',
       createdAt: now,
       updatedAt: now,
     }
@@ -302,6 +310,77 @@ async function closeExitedSessions(
 }
 
 /**
+ * Updates each open forum session's thread starter message to reflect its
+ * current status (running/stopped, most recent action, elapsed time).
+ * No-op entirely when the parent channel is not a forum, since only forum
+ * threads have a starter message (see Issue #34's scope decision).
+ *
+ * Liveness is checked via the same cache-first pattern as
+ * `closeSessionIfExited`. Each session's computed content is only sent to
+ * Discord when `dependencies.statusTracker` says it actually changed and
+ * enough time has passed since the last edit, keeping this well within
+ * Discord's message-edit rate limit even with many open sessions.
+ */
+async function updateThreadStatuses(
+  dependencies: OrchestratorDependencies,
+  config: Config
+): Promise<void> {
+  if (config.parentChannel.type !== 'forum') return
+
+  const openSessions = findOpenSessions(dependencies.db)
+  const now = Date.now()
+  const results = await Promise.allSettled(
+    openSessions.map(async (session) => {
+      const cachedClaudePid = dependencies.resolvedPanes.get(
+        paneKey(session.tmuxSession, session.tmuxPanePid)
+      )
+      const isRunning =
+        cachedClaudePid !== undefined &&
+        (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
+          ? true
+          : Boolean(
+              await findClaudeProcessPid(
+                dependencies.procRoot,
+                session.tmuxPanePid
+              )
+            )
+
+      const content = formatThreadStatus({
+        title: buildFallbackThreadTitle(session.cwd, session.tmuxSession),
+        isRunning,
+        lastActionSummary: session.lastActionSummary,
+        elapsedMinutes: Math.floor((now - session.createdAt) / 60_000),
+      })
+
+      if (
+        !dependencies.statusTracker.shouldUpdate(
+          session.threadId,
+          content,
+          now,
+          THREAD_STATUS_MIN_INTERVAL_MS
+        )
+      ) {
+        return
+      }
+
+      await dependencies.parentChannel.updateThreadStatus?.(
+        session.threadId,
+        content
+      )
+      dependencies.statusTracker.recordUpdate(session.threadId, content, now)
+    })
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const session = openSessions[index]
+    console.error(
+      `Failed to update thread status for session ${session.id}:`,
+      result.reason
+    )
+  }
+}
+
+/**
  * Runs one tmux detection / sessionId resolution / registration cycle.
  *
  * Panes are processed independently via `Promise.allSettled` rather than
@@ -331,4 +410,5 @@ export async function runDetectionCycle(
     )
   }
   await closeExitedSessions(dependencies, config)
+  await updateThreadStatuses(dependencies, config)
 }

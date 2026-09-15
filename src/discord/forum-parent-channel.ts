@@ -17,4 +17,12 @@ export class ForumParentChannel implements ParentChannel {
     if (!thread) return
     await thread.setArchived(true)
   }
+
+  async updateThreadStatus(threadId: string, content: string): Promise<void> {
+    const thread = await this.channel.threads.fetch(threadId)
+    if (!thread) return
+    const starterMessage = await thread.fetchStarterMessage()
+    if (!starterMessage) return
+    await starterMessage.edit(content)
+  }
 }
