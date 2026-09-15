@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Config } from '../config/schema'
 import type { ParentChannel } from '../discord/parent-channel'
 import { buildFallbackThreadTitle } from '../discord/thread-title'
+import { formatThreadStatus } from '../discord/thread-status'
 import {
   findOpenSessions,
   findSessionById,
@@ -24,6 +25,10 @@ import {
   promptSessionIdSelection,
   type PromptChannel,
 } from './ambiguity'
+import {
+  THREAD_STATUS_MIN_INTERVAL_MS,
+  ThreadStatusTracker,
+} from './thread-status-tracker'
 
 /** External collaborators `runDetectionCycle` needs, injected for testability. */
 export interface OrchestratorDependencies {
@@ -58,6 +63,8 @@ export interface OrchestratorDependencies {
    * `sessions.id` primary key.
    */
   registeringSessionIds: Set<string>
+  /** Tracks each thread's last-applied starter message content, to skip redundant Discord edits (see `updateThreadStatuses`). */
+  statusTracker: ThreadStatusTracker
 }
 
 /** Builds the `resolvedPanes` cache key identifying a tmux session/pane pair. */
@@ -122,6 +129,7 @@ async function registerSession(
       jsonlOffset: 0,
       status: 'discovered',
       threadNameSource: 'fallback',
+      lastActionSummary: '',
       createdAt: now,
       updatedAt: now,
     }
@@ -232,16 +240,38 @@ async function processPane(
 }
 
 /**
+ * Resolves whether `session`'s Claude Code process is still alive, via the
+ * same cache-first check `processPane` uses for its `resolvedPanes` fast
+ * path: `isClaudeProcessAlive` (a single `comm` file read) confirms a
+ * still-live cached pid without paying for a full `/proc` tree walk;
+ * `findClaudeProcessPid` (the tree walk) only runs as a fallback when the
+ * cache is stale or missing. Shared by `closeSessionIfExited` and
+ * `updateThreadStatuses` so each open session is only probed once per
+ * detection cycle instead of twice.
+ */
+async function isSessionAlive(
+  dependencies: OrchestratorDependencies,
+  session: SessionRow
+): Promise<boolean> {
+  const cachedClaudePid = dependencies.resolvedPanes.get(
+    paneKey(session.tmuxSession, session.tmuxPanePid)
+  )
+  if (
+    cachedClaudePid !== undefined &&
+    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
+  ) {
+    return true
+  }
+  return Boolean(
+    await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
+  )
+}
+
+/**
  * Marks `session` closed (and archives its Discord thread, for a forum
  * parent channel) if its Claude process has exited; leaves it untouched
  * otherwise. See Issue #31's scope decision: text-channel threads are not
  * archived.
- *
- * Liveness is checked via the cache first, mirroring `processPane`'s
- * `resolvedPanes` fast path: `isClaudeProcessAlive` (a single `comm` file
- * read) confirms a still-live cached pid without paying for a full `/proc`
- * tree walk. `findClaudeProcessPid` (the tree walk) only runs as a fallback
- * when the cache is stale or missing.
  *
  * The DB close is authoritative regardless of the Discord API outcome: an
  * `archiveThread` failure is logged and skipped so it never blocks the
@@ -252,15 +282,7 @@ async function closeSessionIfExited(
   config: Config,
   session: SessionRow
 ): Promise<void> {
-  const cachedClaudePid = dependencies.resolvedPanes.get(
-    paneKey(session.tmuxSession, session.tmuxPanePid)
-  )
-  const claudePid =
-    cachedClaudePid !== undefined &&
-    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
-      ? cachedClaudePid
-      : await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
-  if (claudePid) return
+  if (await isSessionAlive(dependencies, session)) return
 
   markSessionClosed(dependencies.db, session.id)
 
@@ -276,16 +298,17 @@ async function closeSessionIfExited(
 }
 
 /**
- * Runs `closeSessionIfExited` for every open session. Sessions are checked
- * independently via `Promise.allSettled`, mirroring `runDetectionCycle`'s
- * pane processing below: a single session whose liveness check throws must
- * not block the rest of this cycle's open sessions from being checked.
+ * Runs `closeSessionIfExited` for every session in `openSessions`. Sessions
+ * are checked independently via `Promise.allSettled`, mirroring
+ * `runDetectionCycle`'s pane processing below: a single session whose
+ * liveness check throws must not block the rest of this cycle's open
+ * sessions from being checked.
  */
 async function closeExitedSessions(
   dependencies: OrchestratorDependencies,
-  config: Config
+  config: Config,
+  openSessions: SessionRow[]
 ): Promise<void> {
-  const openSessions = findOpenSessions(dependencies.db)
   const results = await Promise.allSettled(
     openSessions.map((session) =>
       closeSessionIfExited(dependencies, config, session)
@@ -296,6 +319,65 @@ async function closeExitedSessions(
     const session = openSessions[index]
     console.error(
       `Failed to check exit status for session ${session.id}:`,
+      result.reason
+    )
+  }
+}
+
+/**
+ * Updates each open forum session's thread starter message to reflect its
+ * current status (running/stopped, most recent action, elapsed time).
+ * No-op entirely when the parent channel is not a forum, since only forum
+ * threads have a starter message.
+ *
+ * Liveness is checked via the same cache-first pattern as
+ * `closeSessionIfExited` (see `isSessionAlive`). Each session's computed
+ * content is only sent to Discord when `dependencies.statusTracker` says it
+ * actually changed and enough time has passed since the last edit, keeping
+ * this well within Discord's message-edit rate limit even with many open
+ * sessions.
+ */
+async function updateThreadStatuses(
+  dependencies: OrchestratorDependencies,
+  config: Config,
+  openSessions: SessionRow[]
+): Promise<void> {
+  if (config.parentChannel.type !== 'forum') return
+
+  const now = Date.now()
+  const results = await Promise.allSettled(
+    openSessions.map(async (session) => {
+      const isRunning = await isSessionAlive(dependencies, session)
+
+      const content = formatThreadStatus({
+        isRunning,
+        lastActionSummary: session.lastActionSummary,
+        elapsedMinutes: Math.floor((now - session.createdAt) / 60_000),
+      })
+
+      if (
+        !dependencies.statusTracker.shouldUpdate(
+          session.threadId,
+          content,
+          now,
+          THREAD_STATUS_MIN_INTERVAL_MS
+        )
+      ) {
+        return
+      }
+
+      await dependencies.parentChannel.updateThreadStatus?.(
+        session.threadId,
+        content
+      )
+      dependencies.statusTracker.recordUpdate(session.threadId, content, now)
+    })
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    const session = openSessions[index]
+    console.error(
+      `Failed to update thread status for session ${session.id}:`,
       result.reason
     )
   }
@@ -330,5 +412,7 @@ export async function runDetectionCycle(
       result.reason
     )
   }
-  await closeExitedSessions(dependencies, config)
+  const openSessions = findOpenSessions(dependencies.db)
+  await closeExitedSessions(dependencies, config, openSessions)
+  await updateThreadStatuses(dependencies, config, openSessions)
 }

@@ -5,6 +5,7 @@ import { createDiscordClient } from './discord/client'
 import { createParentChannel } from './discord/parent-channel'
 import { toAttachmentData } from './discord/attachment'
 import { AmbiguityTracker } from './core/ambiguity'
+import { ThreadStatusTracker } from './core/thread-status-tracker'
 import {
   runDetectionCycle,
   type OrchestratorDependencies,
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
     socketPath,
     resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
+    statusTracker: new ThreadStatusTracker(),
   }
 
   const LOG_SYNC_POLL_INTERVAL_MS = 1000

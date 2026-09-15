@@ -11,6 +11,7 @@ import {
   runDetectionCycle,
   type OrchestratorDependencies,
 } from './orchestrator'
+import { ThreadStatusTracker } from './thread-status-tracker'
 
 vi.mock('../tmux/list-sessions', () => ({
   listAllTmuxPanes: vi.fn(),
@@ -81,6 +82,7 @@ function makeDependencies(): {
     socketPath: '/tmp/tmux-host/default',
     resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
+    statusTracker: new ThreadStatusTracker(),
   }
   return { dependencies, createSessionThread, promptSend }
 }
@@ -99,6 +101,7 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     jsonlOffset: 0,
     status: 'discovered',
     threadNameSource: 'fallback',
+    lastActionSummary: '',
     createdAt: 1000,
     updatedAt: 1000,
     ...overrides,
@@ -474,5 +477,92 @@ describe('closing exited sessions', () => {
       runDetectionCycle(dependencies, makeConfig())
     ).resolves.not.toThrow()
     expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+  })
+})
+
+describe('updating thread statuses', () => {
+  it('updates the starter message for an open session in a forum parent channel', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    const { dependencies } = makeDependencies()
+    const updateThreadStatus = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.updateThreadStatus = updateThreadStatus
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(updateThreadStatus).toHaveBeenCalledWith(
+      'thread-1',
+      expect.stringContaining('実行中')
+    )
+  })
+
+  it('does not check liveness or update the starter message for a text parent channel', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    const { dependencies } = makeDependencies()
+    const updateThreadStatus = vi.fn()
+    dependencies.parentChannel.updateThreadStatus = updateThreadStatus
+    insertSession(dependencies.db, makeSessionRow())
+    const config = makeConfig()
+    config.parentChannel = { type: 'text', id: 'channel-1' }
+
+    await runDetectionCycle(dependencies, config)
+
+    expect(updateThreadStatus).not.toHaveBeenCalled()
+  })
+
+  it('does not update the starter message for a closed session', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    const { dependencies } = makeDependencies()
+    const updateThreadStatus = vi.fn()
+    dependencies.parentChannel.updateThreadStatus = updateThreadStatus
+    insertSession(dependencies.db, makeSessionRow({ status: 'closed' }))
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(updateThreadStatus).not.toHaveBeenCalled()
+  })
+
+  it('does not re-update the starter message when the status tracker reports no change', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    const { dependencies } = makeDependencies()
+    const updateThreadStatus = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.updateThreadStatus = updateThreadStatus
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(updateThreadStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('continues updating other sessions when one updateThreadStatus call rejects', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    const { dependencies } = makeDependencies()
+    const updateThreadStatus = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Discord API error'))
+      .mockResolvedValueOnce(undefined)
+    dependencies.parentChannel.updateThreadStatus = updateThreadStatus
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ id: 'session-1', threadId: 'thread-1' })
+    )
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ id: 'session-2', threadId: 'thread-2' })
+    )
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(
+      runDetectionCycle(dependencies, makeConfig())
+    ).resolves.not.toThrow()
+
+    expect(updateThreadStatus).toHaveBeenCalledTimes(2)
+    error.mockRestore()
   })
 })

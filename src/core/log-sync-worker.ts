@@ -10,11 +10,13 @@ import {
 import { createJsonlTailer, type JsonlTailer } from '../claude-log/tail'
 import {
   updateJsonlPath,
+  updateLastActionSummary,
   updateThreadNameSource,
   type ThreadNameSource,
 } from '../registry/sessions'
 import { findLatestJsonlForSessionId } from '../tmux/session-id-resolver'
 import { truncateThreadTitle } from '../discord/thread-title'
+import { summarizePostItems } from '../discord/thread-status'
 
 /**
  * A single Discord post: plain text and/or file attachments. The union
@@ -417,10 +419,16 @@ async function processLine(
     advanceOffset()
     return
   }
-  // Only merge matched echo IDs into the shared set once the whole line's
-  // post has succeeded — see the doc comment on makeEchoMatcher.
+  // Only merge matched echo IDs into the shared set, and persist the action
+  // summary, once the whole line's post has succeeded — see the doc comment
+  // on makeEchoMatcher. Otherwise a failed post would still leave the
+  // starter message claiming an action that was never actually delivered.
   for (const id of pendingConsumedIds) {
     consumedInputQueueIds.add(id)
+  }
+  const actionSummary = summarizePostItems(items)
+  if (actionSummary !== undefined) {
+    updateLastActionSummary(dependencies.db, session.id, actionSummary)
   }
   advanceOffset()
 }

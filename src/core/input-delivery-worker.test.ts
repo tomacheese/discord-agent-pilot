@@ -23,6 +23,7 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     jsonlOffset: 0,
     status: 'discovered',
     threadNameSource: 'fallback',
+    lastActionSummary: '',
     createdAt: 1000,
     updatedAt: 1000,
     ...overrides,

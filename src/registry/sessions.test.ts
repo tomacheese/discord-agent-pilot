@@ -9,6 +9,7 @@ import {
   insertSession,
   markSessionClosed,
   updateJsonlPath,
+  updateLastActionSummary,
   updateThreadNameSource,
   type SessionRow,
 } from './sessions'
@@ -28,6 +29,7 @@ function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
     jsonlOffset: 0,
     status: 'discovered',
     threadNameSource: 'fallback',
+    lastActionSummary: '',
     createdAt: 1000,
     updatedAt: 1000,
     ...overrides,
@@ -107,6 +109,26 @@ describe('sessions registry', () => {
     const found = findSessionById(db, 'session-1')
     expect(found?.jsonlPath).toBe('/new/path/session-1.jsonl')
     expect(found?.jsonlOffset).toBe(42)
+  })
+})
+
+describe('updateLastActionSummary', () => {
+  it('updates and reads back the last action summary', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow())
+
+    updateLastActionSummary(db, 'session-1', '⏺ Bash(ls -la)')
+
+    expect(findSessionById(db, 'session-1')?.lastActionSummary).toBe(
+      '⏺ Bash(ls -la)'
+    )
+  })
+
+  it('does not throw for an unknown sessionId', () => {
+    const db = openRegistryDb(':memory:')
+    expect(() => {
+      updateLastActionSummary(db, 'unknown', 'summary')
+    }).not.toThrow()
   })
 })
 

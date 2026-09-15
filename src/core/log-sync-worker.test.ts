@@ -39,6 +39,7 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     jsonlOffset: 0,
     status: 'active',
     threadNameSource: 'fallback',
+    lastActionSummary: '',
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
@@ -116,6 +117,47 @@ describe('runLogSyncCycle', () => {
         jsonl_offset: number
       }
       return row.jsonl_offset === Buffer.byteLength(line, 'utf8')
+    })
+    db.close()
+  })
+
+  it('persists the last action summary for an assistant text entry', async () => {
+    const db = openRegistryDb(':memory:')
+    writeFileSync(jsonlPath, '')
+    insertSession(db, makeSession({ jsonlPath }))
+    const thread: DiscordThread = {
+      send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+      setName: vi.fn().mockResolvedValue(undefined),
+    }
+    const dependencies: LogSyncDependencies = {
+      db,
+      getThread: () => Promise.resolve(thread),
+      pollIntervalMs: 50,
+    }
+
+    await runLogSyncCycle(dependencies)
+    writeFileSync(
+      jsonlPath,
+      JSON.stringify({
+        ...makeEntryBase(),
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          id: 'msg-1',
+          model: 'claude-1',
+          content: [{ type: 'text', text: 'hello world' }],
+        },
+      }) + '\n'
+    )
+
+    await waitFor(() => {
+      const row = db
+        .prepare(
+          'SELECT last_action_summary AS lastActionSummary FROM sessions WHERE id = ?'
+        )
+        .get('session-1') as { lastActionSummary: string }
+      return row.lastActionSummary === 'hello world'
     })
     db.close()
   })

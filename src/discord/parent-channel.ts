@@ -13,6 +13,13 @@ export interface ParentChannel {
    * undefined.
    */
   archiveThread?(threadId: string): Promise<void>
+  /**
+   * Updates the thread's starter message content to reflect its current
+   * status. Optional: only `ForumParentChannel` implements this today,
+   * since only forum threads have a starter message; `TextParentChannel`
+   * leaves this undefined.
+   */
+  updateThreadStatus?(threadId: string, content: string): Promise<void>
 }
 
 /**

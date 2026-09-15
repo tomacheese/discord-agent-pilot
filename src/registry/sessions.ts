@@ -27,6 +27,8 @@ export interface SessionRow {
   jsonlOffset: number
   status: string
   threadNameSource: ThreadNameSource
+  /** Short human-readable summary of the session's most recent action, derived from JSONL entries. Empty string until the first assistant/user entry is processed. */
+  lastActionSummary: string
   createdAt: number
   updatedAt: number
 }
@@ -54,6 +56,7 @@ export function findSessionById(
               cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
               jsonl_offset AS jsonlOffset, status,
               thread_name_source AS threadNameSource,
+              last_action_summary AS lastActionSummary,
               created_at AS createdAt, updated_at AS updatedAt
        FROM sessions WHERE id = ?`
     )
@@ -77,6 +80,7 @@ export function findSessionByThreadId(
               cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
               jsonl_offset AS jsonlOffset, status,
               thread_name_source AS threadNameSource,
+              last_action_summary AS lastActionSummary,
               created_at AS createdAt, updated_at AS updatedAt
        FROM sessions WHERE thread_id = ?`
     )
@@ -94,11 +98,11 @@ export function insertSession(
     `INSERT INTO sessions
        (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid,
         tmux_pane_id, cwd, config_dir, jsonl_path, jsonl_offset, status,
-        thread_name_source, created_at, updated_at)
+        thread_name_source, last_action_summary, created_at, updated_at)
      VALUES
        (@id, @threadId, @parentChannelId, @tmuxSession, @tmuxPanePid,
         @tmuxPaneId, @cwd, @configDir, @jsonlPath, @jsonlOffset, @status,
-        @threadNameSource, @createdAt, @updatedAt)`
+        @threadNameSource, @lastActionSummary, @createdAt, @updatedAt)`
   ).run(session)
 }
 
@@ -110,6 +114,18 @@ export function updateThreadNameSource(
 ): void {
   db.prepare('UPDATE sessions SET thread_name_source = ? WHERE id = ?').run(
     source,
+    sessionId
+  )
+}
+
+/** Updates `last_action_summary` for `sessionId`. No-op if `sessionId` does not exist. */
+export function updateLastActionSummary(
+  db: Database.Database,
+  sessionId: string,
+  summary: string
+): void {
+  db.prepare('UPDATE sessions SET last_action_summary = ? WHERE id = ?').run(
+    summary,
     sessionId
   )
 }
@@ -172,6 +188,7 @@ export function findOpenSessions(db: Database.Database): SessionRow[] {
               cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
               jsonl_offset AS jsonlOffset, status,
               thread_name_source AS threadNameSource,
+              last_action_summary AS lastActionSummary,
               created_at AS createdAt, updated_at AS updatedAt
        FROM sessions WHERE status != 'closed'`
     )
