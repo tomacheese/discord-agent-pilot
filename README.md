@@ -1,33 +1,36 @@
 # discord-agent-pilot
 
-Discord スレッドを通じて、tmux 上で動作する Claude Code を監視・操作できる Discord Bot。
+A Discord bot that monitors and controls Claude Code running in tmux through Discord threads.
 
-## セットアップ
+## Setup
 
 ```bash
 pnpm install
-cp config.example.yaml config.yaml   # 値を環境に合わせて編集する
+cp config.example.yaml config.yaml   # edit the values for your environment
 pnpm dev
 ```
 
-## CLAUDE_CONFIG_DIR 対応
+The Discord token is read from `discordToken` in `config.yaml`, or from the `DISCORD_TOKEN` environment variable when it is omitted.
 
-Claude Code は `CLAUDE_CONFIG_DIR` 環境変数が設定されている場合、`~/.claude` の代わりにそのディレクトリを設定・会話ログの置き場所として使う。discord-agent-pilot は、検出した tmux ペイン内の `claude` プロセスの `${claude.procRoot}/<pid>/environ`(Docker コンテナ実行時は `claude.procRoot` を `/host/proc` に設定してホストの `/proc` を bind mount 経由で参照する。ホスト直接実行時は既定値の `/proc` のまま)からこの値を読み取り、セッションごとに正しい JSONL 探索ルートへ切り替える(未設定時は `claude.defaultConfigDir` にフォールバックする)。
+## CLAUDE_CONFIG_DIR support
 
-- 許可する `CLAUDE_CONFIG_DIR` は `config.yaml` の `configDirs`(`hostPath`/`containerPath` のペアの配列)で列挙する。`claude.defaultConfigDir` は常に暗黙的に許可される。
-- `hostPath` は `${claude.procRoot}/<pid>/environ` から取得したホスト側の生の値と文字列比較されるため、`~` は展開されない。絶対パスで指定すること。
-- `configDirs`(および `defaultConfigDir`)に列挙されていない `CLAUDE_CONFIG_DIR` を持つセッションは拒否され、Discord スレッドは作成されない。
-- Docker コンテナ実行時は、`hostPath` ごとに対応する `containerPath` へホスト側ディレクトリを読み取り専用で bind mount する必要がある(`compose.yaml` 参照)。複数の `CLAUDE_CONFIG_DIR` を許可する場合は、`configDirs` にエントリを追加すると同時に、対応する bind mount も追加する。
+When the `CLAUDE_CONFIG_DIR` environment variable is set, Claude Code stores its settings and conversation logs there instead of in `~/.claude`. discord-agent-pilot reads this value from `${claude.procRoot}/<pid>/environ` of the `claude` process found in each tmux pane, and switches to the matching JSONL search root per session (falling back to `claude.defaultConfigDir` when it is unset). When running in Docker, set `claude.procRoot` to `/host/proc` and bind-mount the host's `/proc` there; when running directly on the host, keep the default `/proc`.
 
-## アーキテクチャ
+- List the allowed `CLAUDE_CONFIG_DIR` values in `configDirs` of `config.yaml` as an array of `hostPath`/`containerPath` pairs. `claude.defaultConfigDir` is always implicitly allowed.
+- `hostPath` is compared as a string with the raw host-side value read from `${claude.procRoot}/<pid>/environ`, so `~` is not expanded. Use an absolute path.
+- Sessions whose `CLAUDE_CONFIG_DIR` is not listed in `configDirs` (or `defaultConfigDir`) are rejected and no Discord thread is created.
+- When running in Docker, each `hostPath` must be bind-mounted read-only to its `containerPath` (see `compose.yaml`). To allow additional `CLAUDE_CONFIG_DIR` values, add an entry to `configDirs` and the matching bind mount.
 
-`src/` は責務ごとにディレクトリ分割されている。
+## Architecture
+
+`src/` is split by responsibility:
 
 ```
 src/
-  config/     設定ファイルの読込・バリデーション(zod)
-  registry/   SQLiteによるsession registry(better-sqlite3)
-  discord/    ParentChannel(text/forum)抽象、権限制御、discord.jsクライアント
-  tmux/       tmuxセッション列挙・プロセスツリー検査・sessionId解決
-  core/       上記を束ねるorchestrator(定期ポーリング)
+  config/      config loading and validation (zod)
+  registry/    SQLite session registry and input queue (better-sqlite3)
+  discord/     ParentChannel (text/forum) abstraction, permissions, discord.js client
+  tmux/        tmux session listing, process tree inspection, sessionId resolution, input sending
+  claude-log/  Claude Code JSONL log tail / parse / format
+  core/        orchestrator (periodic polling) and workers tying the above together
 ```
