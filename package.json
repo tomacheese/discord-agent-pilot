@@ -26,7 +26,7 @@
     "@vitest/coverage-v8": "4.1.9",
     "eslint": "10.6.0",
     "fauxcord": "github:tomacheese/fauxcord#fd50fbbc0aca42fbf5b7be53417fb33114c6ffac",
-    "npm-run-all2": "9.0.2",
+    "npm-run-all2": "9.0.4",
     "prettier": "3.9.4",
     "typescript": "6.0.3",
     "vitest": "4.1.9"
