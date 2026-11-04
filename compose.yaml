@@ -1,18 +1,18 @@
 services:
   bot:
     build: .
-    user: '1000:1000' # ホストでtmux/Claude Codeを動かすUIDと一致させる(環境に応じて変更)
+    user: '1000:1000' # Match the UID that runs tmux/Claude Code on the host (change as needed)
     environment:
       CONFIG_PATH: /app/config.yaml
       DB_PATH: /data/registry.db
       DISCORD_TOKEN: ${DISCORD_TOKEN}
     volumes:
       - /proc:/host/proc:ro
-      - /tmp/tmux-1000:/tmp/tmux-host # ホストのtmuxソケットディレクトリ(UIDに合わせて変更)。Unixドメインソケットへのconnect()には書き込み権限が必要なため:roにしない
-      - ${HOME}/.claude:/host/claude-config:ro # claude.defaultConfigDir。configDirs/defaultConfigDirのhostPath/containerPathの組ごとに1マウントが必要。config.yaml側のhostPathは`~`展開されないため絶対パスで指定し、ここも`~`ではなく${HOME}で明示的に展開する
-      # - /home/user/.claude-work:/host/claude-config-work:ro # config.yamlのconfigDirsに追加のCLAUDE_CONFIG_DIRを許可した場合、対応するcontainerPathをこのように追加でマウントする
+      - /tmp/tmux-1000:/tmp/tmux-host # Host tmux socket directory (adjust to the UID). Do not use :ro, since connect() on a Unix domain socket requires write permission
+      - ${HOME}/.claude:/host/claude-config:ro # claude.defaultConfigDir. One mount is needed per hostPath/containerPath pair in configDirs/defaultConfigDir. hostPath in config.yaml is not `~`-expanded, so use an absolute path there and expand it explicitly with ${HOME} here instead of `~`
+      # - /home/user/.claude-work:/host/claude-config-work:ro # If configDirs in config.yaml allows an additional CLAUDE_CONFIG_DIR, mount its containerPath like this
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/data
     security_opt:
-      - apparmor:unconfined # 既定のdocker-defaultプロファイルが/proc読み取りをブロックするため必須
+      - apparmor:unconfined # Required because the default docker-default profile blocks reading /proc
     restart: unless-stopped

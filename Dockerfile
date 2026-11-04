@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-# tmux クライアントバイナリのみをインストールする(サーバー/セッションはコンテナ内で起動しない)
+# Install only the tmux client binary (the server/sessions are not started in the container)
 # hadolint ignore=DL3018
 RUN apk add --no-cache tmux
 

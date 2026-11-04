@@ -1,5 +1,5 @@
 guildId: '123456789012345678'
-# 省略した場合は環境変数 DISCORD_TOKEN が使われる。設定するとこちらが優先される。
+# If omitted, the DISCORD_TOKEN environment variable is used. If set, this takes precedence.
 # discordToken: 'YOUR_BOT_TOKEN'
 parentChannel:
   type: forum
@@ -8,11 +8,11 @@ allowedUserIds:
   - '345678901234567890'
 workspaceRoots:
   - '/mnt/ssd/repos'
-# CLAUDE_CONFIG_DIR で既定以外の値を使うセッションのみ、ここに列挙したものが許可される
-# (`claude.defaultConfigDir` は常に暗黙的に許可される)。
-# hostPath は /proc/<pid>/environ から取得する値と文字列比較するため、`~` はサポートされず絶対パスで指定する。
-# 複数の CLAUDE_CONFIG_DIR を許可する場合は、この配列にエントリを追加し、
-# compose.yaml 側にも hostPath ごとに1つ bind mount を追加する。
+# Allowed CLAUDE_CONFIG_DIR values other than the default are listed here
+# (`claude.defaultConfigDir` is always implicitly allowed).
+# hostPath is string-compared with the value read from /proc/<pid>/environ, so `~` is not supported; use an absolute path.
+# To allow more CLAUDE_CONFIG_DIR values, add entries to this array and add one
+# matching bind mount per hostPath in compose.yaml.
 configDirs:
   - hostPath: '/home/user/.claude-work'
     containerPath: '/host/claude-config-work'
@@ -23,6 +23,6 @@ sessionResolution:
   ambiguityThresholdMs: 3000
 claude:
   defaultConfigDir:
-    hostPath: '/home/user/.claude' # `~` はサポートされないため絶対パスを指定する
+    hostPath: '/home/user/.claude' # `~` is not supported; use an absolute path
     containerPath: '/host/claude-config'
-  procRoot: '/host/proc' # compose.yaml で /proc をここにマウントするため、コンテナ自身の /proc ではなくホストの /proc を指す
+  procRoot: '/host/proc' # compose.yaml mounts the host's /proc here, so this points at the host's /proc rather than the container's own

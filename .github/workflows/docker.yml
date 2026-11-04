@@ -1,5 +1,5 @@
-# 任意のレジストリに Docker image を公開orビルドする。
-# プルリクの作成・更新時に動作する。
+# Publish or build the Docker image to a registry.
+# Runs when a pull request is opened or updated.
 
 name: Docker
 
