@@ -18,7 +18,7 @@
     "fix:prettier": "prettier --write src/",
     "fix": "run-s fix:*"
   },
-  "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8",
+  "packageManager": "pnpm@11.28.10+sha512.672216f06e15c109b85471d49d3fbed17e6f03ead258df08c2bf5b4a5c33321ebfbf59476bce81325efada16ace0ac78548fd0bfcd7a51369e939182a3dd50e4",
   "devDependencies": {
     "@book000/eslint-config": "1.15.37",
     "@types/better-sqlite3": "7.6.13",
