@@ -21,7 +21,7 @@
   "packageManager": "pnpm@11.28.10+sha512.672216f06e15c109b85471d49d3fbed17e6f03ead258df08c2bf5b4a5c33321ebfbf59476bce81325efada16ace0ac78548fd0bfcd7a51369e939182a3dd50e4",
   "devDependencies": {
     "@book000/eslint-config": "1.15.37",
-    "@types/better-sqlite3": "7.6.13",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.2",
     "@vitest/coverage-v8": "4.1.12",
     "eslint": "10.6.0",
