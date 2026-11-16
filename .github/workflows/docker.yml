@@ -68,8 +68,23 @@ jobs:
     if: always()
     # Manual approval via Environment is required only for non-closed fork PRs
     environment: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && github.event.action != 'closed' && 'fork-pr-build' || '' }}
-    permissions: {}
+    permissions:
+      actions: read
     steps:
+      # GitHub creates a missing environment without protection rules, so reaching
+      # this job does not prove that a reviewer approved. Fail closed unless the
+      # environment has a required reviewers rule.
+      - name: Verify fork-pr-build protection
+        if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! [ "$(gh api "repos/$GH_REPO/environments/fork-pr-build" --jq '(.protection_rules // []) | any(.type == "required_reviewers")')" = true ]; then
+            echo "::error::Environment fork-pr-build must exist and have a required reviewers protection rule before fork PRs can be built."
+            exit 1
+          fi
+
       - name: Approval granted
         run: echo "Approval gate passed"
 
@@ -89,4 +104,3 @@ jobs:
     secrets:
       DOCKER_USERNAME: ${{ github.actor }}
       DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-
