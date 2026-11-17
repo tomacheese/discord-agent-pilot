@@ -3,19 +3,18 @@ import {
   findOldestPendingInput,
   updateInputQueueState,
 } from '../registry/input-queue'
-import {
-  findSessionById,
-  hasTmuxPane,
-  type SessionRow,
-} from '../registry/sessions'
+import { findSessionById, hasTmuxPane } from '../registry/sessions'
 import { sendTextToPane } from '../tmux/send'
 import type { ExecFunction } from '../tmux/list-sessions'
+import { isSessionProcessAlive } from './session-liveness'
 
 /** External dependencies `triggerInputDelivery` needs, injected for testability. */
 export interface InputDeliveryDependencies {
   db: Database.Database
   exec: ExecFunction
   socketPath: string
+  /** `/proc` root used to verify the Claude process a session is bound to before pasting into its pane. */
+  procRoot: string
 }
 
 /** Per-`InputDeliveryDependencies` set of sessionIds currently being delivered. */
@@ -42,28 +41,42 @@ function makeBufferName(sessionId: string, inputQueueRowId: number): string {
 }
 
 /**
- * Delivers one pending row for `sessionId`, using the already-resolved
- * `session` (its `tmuxPaneId` does not change across a single
- * `triggerInputDelivery` invocation's drain loop, so the caller resolves it
- * once rather than re-querying per row): sends the row's body via
- * `sendTextToPane`, and updates the row's state to `sent` or `failed`.
- * Never throws — all failures (including a missing/unresolved session, or
- * an error while writing the `sending` state) are recorded as
- * `state = 'failed'` on the row itself so the caller's loop can continue to
- * the next row.
+ * Delivers one pending row for `sessionId`: re-reads the session and refuses
+ * to paste unless it is still open, has a tmux pane, and the Claude process
+ * it is bound to is still running (a session can close, or its pane can be
+ * taken over by another process, between queuing and delivery, or while a
+ * drain loop is running). Otherwise sends the row's body via
+ * `sendTextToPane` and updates the row's state to `sent` or `failed`.
+ * Never throws — all failures (including a rejected target, or an error
+ * while writing the `sending` state) are recorded as `state = 'failed'` on
+ * the row itself so the caller's loop can continue to the next row.
  */
 async function deliverOne(
   dependencies: InputDeliveryDependencies,
   sessionId: string,
-  session: SessionRow | undefined,
   row: { id: number; body: string }
 ): Promise<void> {
+  const reject = (reason: string): void => {
+    console.error(`${reason}; marking input_queue row ${row.id} as failed`)
+    updateInputQueueState(dependencies.db, row.id, 'failed')
+  }
+
   try {
-    if (!session || !hasTmuxPane(session)) {
-      console.error(
-        `No resolvable tmux pane for session ${sessionId}; marking input_queue row ${row.id} as failed`
-      )
-      updateInputQueueState(dependencies.db, row.id, 'failed')
+    const session = findSessionById(dependencies.db, sessionId)
+    if (!session) {
+      reject(`Session ${sessionId} not found`)
+      return
+    }
+    if (session.status === 'closed') {
+      reject(`Session ${sessionId} is closed`)
+      return
+    }
+    if (!hasTmuxPane(session)) {
+      reject(`No resolvable tmux pane for session ${sessionId}`)
+      return
+    }
+    if (!(await isSessionProcessAlive(dependencies.procRoot, session))) {
+      reject(`Claude process bound to session ${sessionId} is not running`)
       return
     }
 
@@ -108,11 +121,10 @@ export function triggerInputDelivery(
   inProgress.add(sessionId)
 
   const loop = async (): Promise<void> => {
-    const session = findSessionById(dependencies.db, sessionId)
     for (;;) {
       const row = findOldestPendingInput(dependencies.db, sessionId)
       if (!row) return
-      await deliverOne(dependencies, sessionId, session, row)
+      await deliverOne(dependencies, sessionId, row)
     }
   }
 

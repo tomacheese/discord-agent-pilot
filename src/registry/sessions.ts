@@ -21,6 +21,16 @@ export interface SessionRow {
    * column existed (pre-release data; not backfilled).
    */
   tmuxPaneId: string
+  /**
+   * PID of the Claude Code process this row is bound to. Together with
+   * `claudeStartTicks` it identifies one process instance, so a reused PID is
+   * not mistaken for the original process. Empty string for rows registered
+   * before this column existed (identity unknown; judged by a pane-level
+   * process lookup until the next resolution of the pane adopts an identity).
+   */
+  claudePid: string
+  /** Start time (clock ticks since boot) of the process identified by `claudePid`. */
+  claudeStartTicks: number
   cwd: string
   configDir: string
   jsonlPath: string
@@ -32,6 +42,27 @@ export interface SessionRow {
   createdAt: number
   updatedAt: number
 }
+
+/** The tmux pane and Claude process a session row is (re)bound to. */
+export interface SessionBinding {
+  tmuxSession: string
+  tmuxPanePid: string
+  tmuxPaneId: string
+  claudePid: string
+  claudeStartTicks: number
+}
+
+const SESSION_COLUMNS = `id, thread_id AS threadId,
+              parent_channel_id AS parentChannelId,
+              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
+              tmux_pane_id AS tmuxPaneId,
+              claude_pid AS claudePid,
+              claude_start_ticks AS claudeStartTicks,
+              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
+              jsonl_offset AS jsonlOffset, status,
+              thread_name_source AS threadNameSource,
+              last_action_summary AS lastActionSummary,
+              created_at AS createdAt, updated_at AS updatedAt`
 
 /**
  * Returns whether `session` has a resolved tmux pane id, i.e. `tmuxPaneId`
@@ -49,17 +80,7 @@ export function findSessionById(
   id: string
 ): SessionRow | undefined {
   return db
-    .prepare(
-      `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
-              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
-              tmux_pane_id AS tmuxPaneId,
-              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
-              jsonl_offset AS jsonlOffset, status,
-              thread_name_source AS threadNameSource,
-              last_action_summary AS lastActionSummary,
-              created_at AS createdAt, updated_at AS updatedAt
-       FROM sessions WHERE id = ?`
-    )
+    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`)
     .get(id) as SessionRow | undefined
 }
 
@@ -73,17 +94,7 @@ export function findSessionByThreadId(
   threadId: string
 ): SessionRow | undefined {
   return db
-    .prepare(
-      `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
-              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
-              tmux_pane_id AS tmuxPaneId,
-              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
-              jsonl_offset AS jsonlOffset, status,
-              thread_name_source AS threadNameSource,
-              last_action_summary AS lastActionSummary,
-              created_at AS createdAt, updated_at AS updatedAt
-       FROM sessions WHERE thread_id = ?`
-    )
+    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE thread_id = ?`)
     .get(threadId) as SessionRow | undefined
 }
 
@@ -97,12 +108,14 @@ export function insertSession(
   db.prepare(
     `INSERT INTO sessions
        (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid,
-        tmux_pane_id, cwd, config_dir, jsonl_path, jsonl_offset, status,
-        thread_name_source, last_action_summary, created_at, updated_at)
+        tmux_pane_id, claude_pid, claude_start_ticks, cwd, config_dir,
+        jsonl_path, jsonl_offset, status, thread_name_source,
+        last_action_summary, created_at, updated_at)
      VALUES
        (@id, @threadId, @parentChannelId, @tmuxSession, @tmuxPanePid,
-        @tmuxPaneId, @cwd, @configDir, @jsonlPath, @jsonlOffset, @status,
-        @threadNameSource, @lastActionSummary, @createdAt, @updatedAt)`
+        @tmuxPaneId, @claudePid, @claudeStartTicks, @cwd, @configDir,
+        @jsonlPath, @jsonlOffset, @status, @threadNameSource,
+        @lastActionSummary, @createdAt, @updatedAt)`
   ).run(session)
 }
 
@@ -181,18 +194,47 @@ export function getThreadNameSource(
  */
 export function findOpenSessions(db: Database.Database): SessionRow[] {
   return db
-    .prepare(
-      `SELECT id, thread_id AS threadId, parent_channel_id AS parentChannelId,
-              tmux_session AS tmuxSession, tmux_pane_pid AS tmuxPanePid,
-              tmux_pane_id AS tmuxPaneId,
-              cwd, config_dir AS configDir, jsonl_path AS jsonlPath,
-              jsonl_offset AS jsonlOffset, status,
-              thread_name_source AS threadNameSource,
-              last_action_summary AS lastActionSummary,
-              created_at AS createdAt, updated_at AS updatedAt
-       FROM sessions WHERE status != 'closed'`
-    )
+    .prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE status != 'closed'`)
     .all() as SessionRow[]
+}
+
+/**
+ * Returns the open (not `'closed'`) session rows bound to tmux pane
+ * `paneId`. An empty `paneId` is the legacy "unknown pane" sentinel and
+ * matches nothing.
+ */
+export function findOpenSessionsByPaneId(
+  db: Database.Database,
+  paneId: string
+): SessionRow[] {
+  if (paneId === '') return []
+  return db
+    .prepare(
+      `SELECT ${SESSION_COLUMNS} FROM sessions
+       WHERE status != 'closed' AND tmux_pane_id = ?`
+    )
+    .all(paneId) as SessionRow[]
+}
+
+/**
+ * Reopens `sessionId` (status `'discovered'`) and binds it to `binding`'s
+ * tmux pane and Claude process. Leaves the Discord thread, JSONL path and
+ * offset, cwd and config dir untouched so a resumed session keeps its
+ * thread and does not re-post already-synced log content.
+ */
+export function rebindSession(
+  db: Database.Database,
+  sessionId: string,
+  binding: SessionBinding
+): void {
+  db.prepare(
+    `UPDATE sessions
+     SET tmux_session = @tmuxSession, tmux_pane_pid = @tmuxPanePid,
+         tmux_pane_id = @tmuxPaneId, claude_pid = @claudePid,
+         claude_start_ticks = @claudeStartTicks, status = 'discovered',
+         updated_at = @updatedAt
+     WHERE id = @sessionId`
+  ).run({ ...binding, sessionId, updatedAt: Date.now() })
 }
 
 /** Marks `sessionId`'s `status` as `'closed'`. */

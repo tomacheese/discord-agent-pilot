@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readProcessStartTicks } from './proc'
 
 /**
  * Reads the immediate child pids of `pid` via
@@ -82,4 +83,28 @@ export async function isClaudeProcessAlive(
   pid: string
 ): Promise<boolean> {
   return (await readComm(procRoot, pid)) === 'claude'
+}
+
+/**
+ * Checks that `pid` is still the same `claude` process instance recorded
+ * earlier: its `comm` is `claude` and its start time equals `startTicks`.
+ * The start time distinguishes the original process from an unrelated
+ * process that was later assigned the same pid. Costs two single-file reads
+ * and never walks the process tree.
+ *
+ * Returns false if the process exits while being inspected (`ENOENT`); any
+ * other read error propagates to the caller.
+ */
+export async function isClaudeProcessIdentityAlive(
+  procRoot: string,
+  pid: string,
+  startTicks: number
+): Promise<boolean> {
+  if (!(await isClaudeProcessAlive(procRoot, pid))) return false
+  try {
+    return (await readProcessStartTicks(procRoot, pid)) === startTicks
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
 }

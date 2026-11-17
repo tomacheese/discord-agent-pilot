@@ -19,7 +19,7 @@ describe('openRegistryDb', () => {
   it('records the applied migration version', () => {
     const db = openRegistryDb(':memory:')
     const version = db.pragma('user_version', { simple: true })
-    expect(version).toBe(7)
+    expect(version).toBe(8)
     db.close()
   })
 
@@ -41,7 +41,7 @@ describe('openRegistryDb', () => {
       db1.close()
       const db2 = openRegistryDb(dbPath)
       const version = db2.pragma('user_version', { simple: true })
-      expect(version).toBe(7)
+      expect(version).toBe(8)
       db2.close()
     })
   })
@@ -62,7 +62,7 @@ describe('input_queue migration', () => {
   it('bumps user_version to the latest migration', () => {
     const db = openRegistryDb(':memory:')
     const version = db.pragma('user_version', { simple: true })
-    expect(version).toBe(7)
+    expect(version).toBe(8)
     db.close()
   })
 
@@ -88,6 +88,28 @@ describe('input_queue migration', () => {
       body: 'hello',
       state: 'sent',
     })
+    db.close()
+  })
+})
+
+describe('claude process identity migration', () => {
+  it('adds claude_pid and claude_start_ticks with legacy-row defaults', () => {
+    const db = openRegistryDb(':memory:')
+    db.prepare(
+      `INSERT INTO sessions
+         (id, thread_id, parent_channel_id, tmux_session, tmux_pane_pid, cwd,
+          config_dir, jsonl_path, jsonl_offset, status, created_at, updated_at)
+       VALUES
+         ('session-1', 'thread-1', 'channel-1', 'tmux-1', '123', '/cwd',
+          '/config', '/cwd/session-1.jsonl', 0, 'discovered', 1, 1)`
+    ).run()
+    const row = db
+      .prepare(
+        `SELECT claude_pid AS claudePid, claude_start_ticks AS claudeStartTicks
+         FROM sessions WHERE id = 'session-1'`
+      )
+      .get()
+    expect(row).toEqual({ claudePid: '', claudeStartTicks: 0 })
     db.close()
   })
 })

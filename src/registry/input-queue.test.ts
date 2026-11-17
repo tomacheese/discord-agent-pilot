@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { openRegistryDb } from './db'
 import { insertSession, type SessionRow } from './sessions'
 import {
+  failPendingInputs,
   findOldestPendingInput,
   findSessionIdsWithPendingInput,
   insertPendingInput,
@@ -17,6 +18,8 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     tmuxSession: 'tmux-1',
     tmuxPanePid: '1234',
     tmuxPaneId: '%0',
+    claudePid: '',
+    claudeStartTicks: 0,
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
     jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
@@ -125,6 +128,45 @@ describe('resetStaleSendingInputs', () => {
       .get(sentId) as { state: string }
     expect(pendingRow.state).toBe('pending')
     expect(sentRow.state).toBe('sent')
+  })
+})
+
+function stateOf(db: ReturnType<typeof openRegistryDb>, id: number): string {
+  return (
+    db.prepare('SELECT state FROM input_queue WHERE id = ?').get(id) as {
+      state: string
+    }
+  ).state
+}
+
+describe('failPendingInputs', () => {
+  it('moves only the given session\'s pending rows to "failed" and returns the count', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeSessionRow())
+    insertSession(db, makeSessionRow({ id: 'session-2', threadId: 'thread-2' }))
+    const pendingA = insertPendingInput(db, 'session-1', 'discord', 'a')
+    const pendingB = insertPendingInput(db, 'session-1', 'discord', 'b')
+    const sent = insertPendingInput(db, 'session-1', 'discord', 'c')
+    updateInputQueueState(db, sent, 'sent')
+    const sending = insertPendingInput(db, 'session-1', 'discord', 'd')
+    updateInputQueueState(db, sending, 'sending')
+    const otherSession = insertPendingInput(db, 'session-2', 'discord', 'e')
+
+    const changed = failPendingInputs(db, 'session-1')
+
+    expect(changed).toBe(2)
+    expect(stateOf(db, pendingA)).toBe('failed')
+    expect(stateOf(db, pendingB)).toBe('failed')
+    expect(stateOf(db, sent)).toBe('sent')
+    expect(stateOf(db, sending)).toBe('sending')
+    expect(stateOf(db, otherSession)).toBe('pending')
+  })
+
+  it('returns 0 when the session has no pending rows', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeSessionRow())
+
+    expect(failPendingInputs(db, 'session-1')).toBe(0)
   })
 })
 

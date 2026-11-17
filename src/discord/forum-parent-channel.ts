@@ -18,6 +18,12 @@ export class ForumParentChannel implements ParentChannel {
     await thread.setArchived(true)
   }
 
+  async unarchiveThread(threadId: string): Promise<void> {
+    const thread = await this.channel.threads.fetch(threadId)
+    if (!thread) return
+    await thread.setArchived(false)
+  }
+
   /**
    * Edits the thread's starter message to `content`. No-op if the thread or
    * its starter message can no longer be found.

@@ -7,7 +7,9 @@ import {
   getThreadNameSource,
   hasTmuxPane,
   insertSession,
+  findOpenSessionsByPaneId,
   markSessionClosed,
+  rebindSession,
   updateJsonlPath,
   updateLastActionSummary,
   updateThreadNameSource,
@@ -22,6 +24,8 @@ function makeRow(overrides: Partial<SessionRow> = {}): SessionRow {
     tmuxSession: 'tmux-1',
     tmuxPanePid: '1234',
     tmuxPaneId: '%0',
+    claudePid: '',
+    claudeStartTicks: 0,
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
     jsonlPath:
@@ -55,6 +59,101 @@ describe('sessions registry', () => {
     expect(() => {
       insertSession(db, makeRow())
     }).toThrow()
+  })
+})
+
+describe('claude process identity', () => {
+  it('round-trips claudePid and claudeStartTicks through insert and find', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ claudePid: '4321', claudeStartTicks: 987_654 }))
+
+    const found = findSessionById(db, 'session-1')
+
+    expect(found?.claudePid).toBe('4321')
+    expect(found?.claudeStartTicks).toBe(987_654)
+  })
+})
+
+describe('findOpenSessionsByPaneId', () => {
+  it('returns only open rows bound to the given pane', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ id: 'open-same', threadId: 't1' }))
+    insertSession(
+      db,
+      makeRow({ id: 'closed-same', threadId: 't2', status: 'closed' })
+    )
+    insertSession(
+      db,
+      makeRow({ id: 'open-other', threadId: 't3', tmuxPaneId: '%9' })
+    )
+
+    const rows = findOpenSessionsByPaneId(db, '%0')
+
+    expect(rows.map((row) => row.id)).toEqual(['open-same'])
+  })
+
+  it('returns an empty array for an empty pane id even if legacy rows have one', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ tmuxPaneId: '' }))
+
+    expect(findOpenSessionsByPaneId(db, '')).toEqual([])
+  })
+})
+
+describe('rebindSession', () => {
+  it('reopens a closed row with the new pane and process identity, keeping thread and offset', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(
+      db,
+      makeRow({
+        status: 'closed',
+        jsonlOffset: 500,
+        claudePid: '100',
+        claudeStartTicks: 1,
+        updatedAt: 1000,
+      })
+    )
+
+    rebindSession(db, 'session-1', {
+      tmuxSession: 'tmux-2',
+      tmuxPanePid: '2222',
+      tmuxPaneId: '%5',
+      claudePid: '300',
+      claudeStartTicks: 42,
+    })
+
+    const found = findSessionById(db, 'session-1')
+    expect(found?.updatedAt).toBeGreaterThan(1000)
+    expect({ ...found, updatedAt: 0 }).toEqual({
+      ...makeRow(),
+      tmuxSession: 'tmux-2',
+      tmuxPanePid: '2222',
+      tmuxPaneId: '%5',
+      claudePid: '300',
+      claudeStartTicks: 42,
+      status: 'discovered',
+      jsonlOffset: 500,
+      updatedAt: 0,
+    })
+  })
+
+  it('does not affect other sessions', () => {
+    const db = openRegistryDb(':memory:')
+    insertSession(db, makeRow({ id: 'session-1', status: 'closed' }))
+    insertSession(
+      db,
+      makeRow({ id: 'session-2', threadId: 'thread-2', status: 'closed' })
+    )
+
+    rebindSession(db, 'session-1', {
+      tmuxSession: 'tmux-2',
+      tmuxPanePid: '2222',
+      tmuxPaneId: '%5',
+      claudePid: '300',
+      claudeStartTicks: 42,
+    })
+
+    expect(findSessionById(db, 'session-2')?.status).toBe('closed')
   })
 })
 

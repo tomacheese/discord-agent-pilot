@@ -44,6 +44,7 @@ async function main(): Promise<void> {
     db: database,
     exec: defaultExec,
     socketPath,
+    procRoot: config.claude.procRoot,
   }
 
   const client = createDiscordClient(config, {
@@ -92,7 +93,6 @@ async function main(): Promise<void> {
     ambiguityTracker: new AmbiguityTracker(),
     procRoot: config.claude.procRoot,
     socketPath,
-    resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
     statusTracker: new ThreadStatusTracker(),
   }

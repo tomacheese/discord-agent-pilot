@@ -14,6 +14,12 @@ export interface ParentChannel {
    */
   archiveThread?(threadId: string): Promise<void>
   /**
+   * Reverses `archiveThread` for a session that was resumed. Optional for
+   * the same reason as `archiveThread`: only `ForumParentChannel`
+   * implements it.
+   */
+  unarchiveThread?(threadId: string): Promise<void>
+  /**
    * Updates the thread's starter message content to reflect its current
    * status. Optional: only `ForumParentChannel` implements this today,
    * since only forum threads have a starter message; `TextParentChannel`

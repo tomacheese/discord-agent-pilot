@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { findClaudeProcessPid } from './process-tree'
+import { makeFakeProcRoot, writeFakeProcess } from '../test-utils/fake-proc'
+import {
+  findClaudeProcessPid,
+  isClaudeProcessIdentityAlive,
+} from './process-tree'
 
 function makeProc(
   procRoot: string,
@@ -73,5 +77,53 @@ describe('findClaudeProcessPid', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('isClaudeProcessIdentityAlive', () => {
+  it('returns true when comm is claude and the start ticks match', async () => {
+    const procRoot = makeFakeProcRoot()
+    writeFakeProcess(procRoot, '300', { comm: 'claude', startTicks: 5000 })
+
+    await expect(
+      isClaudeProcessIdentityAlive(procRoot, '300', 5000)
+    ).resolves.toBe(true)
+  })
+
+  it('returns false when the pid is now a different command', async () => {
+    const procRoot = makeFakeProcRoot()
+    writeFakeProcess(procRoot, '300', { comm: 'bash', startTicks: 5000 })
+
+    await expect(
+      isClaudeProcessIdentityAlive(procRoot, '300', 5000)
+    ).resolves.toBe(false)
+  })
+
+  it('returns false when the pid was reused by another claude process (start ticks differ)', async () => {
+    const procRoot = makeFakeProcRoot()
+    writeFakeProcess(procRoot, '300', { comm: 'claude', startTicks: 9000 })
+
+    await expect(
+      isClaudeProcessIdentityAlive(procRoot, '300', 5000)
+    ).resolves.toBe(false)
+  })
+
+  it('returns false when the process no longer exists', async () => {
+    const procRoot = makeFakeProcRoot()
+
+    await expect(
+      isClaudeProcessIdentityAlive(procRoot, '300', 5000)
+    ).resolves.toBe(false)
+  })
+
+  it('returns false when the process exits between the comm and stat reads', async () => {
+    const procRoot = makeFakeProcRoot()
+    const directory = path.join(procRoot, '300')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(path.join(directory, 'comm'), 'claude\n')
+
+    await expect(
+      isClaudeProcessIdentityAlive(procRoot, '300', 5000)
+    ).resolves.toBe(false)
   })
 })

@@ -71,6 +71,23 @@ export function resetStaleSendingInputs(db: Database.Database): void {
 }
 
 /**
+ * Moves every `pending` row of `sessionId` to `failed` and returns how many
+ * rows changed. Used when a session closes: input queued for one process
+ * instance must not be delivered to a later process the session is resumed
+ * in, so it is resolved to the same manual-resend state as crash recovery.
+ */
+export function failPendingInputs(
+  db: Database.Database,
+  sessionId: string
+): number {
+  return db
+    .prepare(
+      "UPDATE input_queue SET state = 'failed' WHERE session_id = ? AND state = 'pending'"
+    )
+    .run(sessionId).changes
+}
+
+/**
  * Returns the distinct `session_id`s that have at least one `pending` row.
  * Used at startup to re-trigger delivery for any input queued before a
  * restart, since delivery is otherwise only triggered on message arrival.

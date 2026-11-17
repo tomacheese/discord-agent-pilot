@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN claude_pid TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN claude_start_ticks INTEGER NOT NULL DEFAULT 0;

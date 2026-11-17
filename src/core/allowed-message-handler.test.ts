@@ -3,6 +3,7 @@ import { openRegistryDb } from '../registry/db'
 import { insertSession, type SessionRow } from '../registry/sessions'
 import type { ExecFunction } from '../tmux/list-sessions'
 import type { InputDeliveryDependencies } from './input-delivery-worker'
+import { makeFakeProcRoot, writeFakeProcess } from '../test-utils/fake-proc'
 import { waitFor } from '../test-utils/wait-for'
 import { handleAllowedMessage } from './allowed-message-handler'
 
@@ -14,6 +15,8 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     tmuxSession: 'tmux-1',
     tmuxPanePid: '1234',
     tmuxPaneId: '%7',
+    claudePid: '300',
+    claudeStartTicks: 5000,
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
     jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
@@ -27,11 +30,15 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
   }
 }
 
+/** Dependencies whose fake `/proc` hosts the live claude process (pid 300) of the default session row. */
 function makeDependencies(exec: ExecFunction): InputDeliveryDependencies {
+  const procRoot = makeFakeProcRoot()
+  writeFakeProcess(procRoot, '300', { comm: 'claude', startTicks: 5000 })
   return {
     db: openRegistryDb(':memory:'),
     exec,
     socketPath: '/tmp/tmux-host/default',
+    procRoot,
   }
 }
 
