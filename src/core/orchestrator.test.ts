@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { Config } from '../config/schema'
 import { openRegistryDb } from '../registry/db'
+import { insertPendingInput } from '../registry/input-queue'
 import {
   findSessionById,
   insertSession,
@@ -18,11 +19,12 @@ vi.mock('../tmux/list-sessions', () => ({
 }))
 vi.mock('../tmux/process-tree', () => ({
   findClaudeProcessPid: vi.fn(),
-  isClaudeProcessAlive: vi.fn(),
+  isClaudeProcessIdentityAlive: vi.fn(),
 }))
 vi.mock('../tmux/proc', () => ({
   readProcessCwd: vi.fn(),
   readProcessEnviron: vi.fn(),
+  readProcessStartTicks: vi.fn(),
 }))
 vi.mock('../tmux/session-id-resolver', () => ({
   resolveContainerConfigDirectory: vi.fn(),
@@ -32,9 +34,13 @@ vi.mock('../tmux/session-id-resolver', () => ({
 import { listAllTmuxPanes } from '../tmux/list-sessions'
 import {
   findClaudeProcessPid,
-  isClaudeProcessAlive,
+  isClaudeProcessIdentityAlive,
 } from '../tmux/process-tree'
-import { readProcessCwd, readProcessEnviron } from '../tmux/proc'
+import {
+  readProcessCwd,
+  readProcessEnviron,
+  readProcessStartTicks,
+} from '../tmux/proc'
 import {
   resolveContainerConfigDirectory,
   resolveSessionId,
@@ -80,7 +86,6 @@ function makeDependencies(): {
     ambiguityTracker: new AmbiguityTracker(),
     procRoot: '/proc',
     socketPath: '/tmp/tmux-host/default',
-    resolvedPanes: new Map(),
     registeringSessionIds: new Set(),
     statusTracker: new ThreadStatusTracker(),
   }
@@ -95,6 +100,8 @@ function makeSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     tmuxSession: 'tmux-1',
     tmuxPanePid: '100',
     tmuxPaneId: '%0',
+    claudePid: '',
+    claudeStartTicks: 0,
     cwd: '/mnt/ssd/repos/example',
     configDir: '/host/claude-config',
     jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
@@ -113,7 +120,8 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue([{ sessionName: 'tmux-1', paneId: '%0', pid: '100' }])
   vi.mocked(findClaudeProcessPid).mockReset().mockResolvedValue('300')
-  vi.mocked(isClaudeProcessAlive).mockReset().mockResolvedValue(true)
+  vi.mocked(isClaudeProcessIdentityAlive).mockReset().mockResolvedValue(true)
+  vi.mocked(readProcessStartTicks).mockReset().mockResolvedValue(5000)
   vi.mocked(readProcessCwd)
     .mockReset()
     .mockResolvedValue('/mnt/ssd/repos/example')
@@ -222,35 +230,42 @@ describe('runDetectionCycle', () => {
     expect(createSessionThread).not.toHaveBeenCalled()
   })
 
-  it('skips the resolution pipeline for a pane whose cached claude process is still alive', async () => {
-    vi.mocked(resolveSessionId).mockResolvedValue({
-      kind: 'resolved',
-      sessionId: 'session-1',
-      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
-    })
-    const { dependencies, createSessionThread } = makeDependencies()
-    dependencies.resolvedPanes.set('tmux-1:100', '300')
-
-    await runDetectionCycle(dependencies, makeConfig())
-
-    expect(isClaudeProcessAlive).toHaveBeenCalledWith('/proc', '300')
-    expect(findClaudeProcessPid).not.toHaveBeenCalled()
-    expect(createSessionThread).not.toHaveBeenCalled()
-  })
-
-  it('re-runs resolution when the pane cache is stale (previous claude process exited)', async () => {
-    vi.mocked(isClaudeProcessAlive).mockResolvedValue(false)
+  it('skips the resolution pipeline for a pane whose bound claude process identity is still alive', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'resolved',
       sessionId: 'session-2',
       jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
     })
     const { dependencies, createSessionThread } = makeDependencies()
-    // A prior session ('session-1', pid 300) was registered in this pane;
-    // that process has since exited and a new claude process (pid 300,
-    // reused by mockResolvedValue('300') as the "new" process for
-    // simplicity) started in the same pane.
-    dependencies.resolvedPanes.set('tmux-1:100', '300')
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(isClaudeProcessIdentityAlive).toHaveBeenCalledWith(
+      '/proc',
+      '300',
+      5000
+    )
+    expect(findClaudeProcessPid).not.toHaveBeenCalled()
+    expect(resolveSessionId).not.toHaveBeenCalled()
+    expect(createSessionThread).not.toHaveBeenCalled()
+  })
+
+  it('re-runs resolution when the process bound to the pane exited and a new claude started', async () => {
+    vi.mocked(isClaudeProcessIdentityAlive).mockResolvedValue(false)
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-2',
+      jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
 
     await runDetectionCycle(dependencies, makeConfig())
 
@@ -258,6 +273,58 @@ describe('runDetectionCycle', () => {
     expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     expect(findSessionById(dependencies.db, 'session-2')).toBeDefined()
   })
+
+  it('records the pid and start ticks of the claude process on a newly registered session', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies } = makeDependencies()
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    const row = findSessionById(dependencies.db, 'session-1')
+    expect(row?.claudePid).toBe('400')
+    expect(row?.claudeStartTicks).toBe(8000)
+    expect(readProcessStartTicks).toHaveBeenCalledWith('/proc', '400')
+  })
+
+  it.each([
+    [
+      'the process exits before its start time is read (ENOENT)',
+      () =>
+        vi
+          .mocked(readProcessStartTicks)
+          .mockRejectedValue(
+            Object.assign(new Error('gone'), { code: 'ENOENT' })
+          ),
+    ],
+    [
+      'the stat file is malformed (NaN)',
+      () => vi.mocked(readProcessStartTicks).mockResolvedValue(NaN),
+    ],
+  ])(
+    'skips the pane for this cycle without writing anything when %s',
+    async (_name, arrange) => {
+      arrange()
+      vi.mocked(resolveSessionId).mockResolvedValue({
+        kind: 'resolved',
+        sessionId: 'session-1',
+        jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+      })
+      const { dependencies, createSessionThread } = makeDependencies()
+
+      await expect(
+        runDetectionCycle(dependencies, makeConfig())
+      ).resolves.toBeUndefined()
+
+      expect(createSessionThread).not.toHaveBeenCalled()
+      expect(findSessionById(dependencies.db, 'session-1')).toBeUndefined()
+    }
+  )
 
   it('prompts for a selection when resolution is ambiguous, then registers the chosen sessionId and its jsonlPath', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
@@ -407,6 +474,344 @@ describe('runDetectionCycle', () => {
 
     expect(createSessionThread).toHaveBeenCalledWith('example (tmux-1)')
     error.mockRestore()
+  })
+})
+
+/** Marks only the given pid/start-ticks pairs as live claude process identities. */
+function aliveIdentities(...alive: [string, number][]): void {
+  vi.mocked(isClaudeProcessIdentityAlive).mockImplementation(
+    (_procRoot, pid, startTicks) =>
+      Promise.resolve(
+        alive.some(([p, ticks]) => p === pid && ticks === startTicks)
+      )
+  )
+}
+
+function stateOfInput(
+  dependencies: OrchestratorDependencies,
+  id: number
+): string {
+  return (
+    dependencies.db
+      .prepare('SELECT state FROM input_queue WHERE id = ?')
+      .get(id) as { state: string }
+  ).state
+}
+
+describe('session process identity', () => {
+  it('closes the previous session of a pane when a new session is registered there, leaving other panes alone', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000], ['301', 6000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-2',
+      jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    createSessionThread.mockResolvedValue({ id: 'thread-2' })
+    const archiveThread = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.archiveThread = archiveThread
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+    insertSession(
+      dependencies.db,
+      makeSessionRow({
+        id: 'session-3',
+        threadId: 'thread-3',
+        tmuxPaneId: '%1',
+        claudePid: '301',
+        claudeStartTicks: 6000,
+      })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+    expect(findSessionById(dependencies.db, 'session-2')?.status).toBe(
+      'discovered'
+    )
+    expect(findSessionById(dependencies.db, 'session-3')?.status).toBe(
+      'discovered'
+    )
+    expect(archiveThread).toHaveBeenCalledTimes(1)
+    expect(archiveThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('closes every other open session of the pane even when archiving one of them fails', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-2',
+      jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    createSessionThread.mockResolvedValue({ id: 'thread-2' })
+    const archiveThread = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Discord API error'))
+      .mockResolvedValue(undefined)
+    dependencies.parentChannel.archiveThread = archiveThread
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+    insertSession(
+      dependencies.db,
+      makeSessionRow({
+        id: 'session-0',
+        threadId: 'thread-0',
+        claudePid: '200',
+        claudeStartTicks: 4000,
+      })
+    )
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+    expect(findSessionById(dependencies.db, 'session-0')?.status).toBe('closed')
+    expect(archiveThread).toHaveBeenCalledTimes(2)
+    error.mockRestore()
+  })
+
+  it('reopens a closed session resumed in the same pane, keeping its thread and offset', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    const unarchiveThread = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.unarchiveThread = unarchiveThread
+    insertSession(
+      dependencies.db,
+      makeSessionRow({
+        status: 'closed',
+        jsonlOffset: 500,
+        claudePid: '300',
+        claudeStartTicks: 5000,
+      })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    const row = findSessionById(dependencies.db, 'session-1')
+    expect(row?.status).toBe('discovered')
+    expect(row?.threadId).toBe('thread-1')
+    expect(row?.jsonlOffset).toBe(500)
+    expect(row?.tmuxPaneId).toBe('%0')
+    expect(row?.claudePid).toBe('400')
+    expect(row?.claudeStartTicks).toBe(8000)
+    expect(createSessionThread).not.toHaveBeenCalled()
+    expect(unarchiveThread).toHaveBeenCalledTimes(1)
+    expect(unarchiveThread).toHaveBeenCalledWith('thread-1')
+  })
+
+  it('reopens a closed session resumed in a different pane and binds it to that pane', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([
+      { sessionName: 'tmux-9', paneId: '%9', pid: '900' },
+    ])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    insertSession(
+      dependencies.db,
+      makeSessionRow({
+        status: 'closed',
+        claudePid: '300',
+        claudeStartTicks: 5000,
+      })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    const row = findSessionById(dependencies.db, 'session-1')
+    expect(row?.status).toBe('discovered')
+    expect(row?.tmuxSession).toBe('tmux-9')
+    expect(row?.tmuxPanePid).toBe('900')
+    expect(row?.tmuxPaneId).toBe('%9')
+    expect(createSessionThread).not.toHaveBeenCalled()
+  })
+
+  it('rebinds a still-open session to its new process without unarchiving its thread', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies } = makeDependencies()
+    const unarchiveThread = vi.fn().mockResolvedValue(undefined)
+    dependencies.parentChannel.unarchiveThread = unarchiveThread
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    const row = findSessionById(dependencies.db, 'session-1')
+    expect(row?.status).toBe('discovered')
+    expect(row?.claudePid).toBe('400')
+    expect(unarchiveThread).not.toHaveBeenCalled()
+  })
+
+  it('still reopens the session when unarchiving its thread fails', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies } = makeDependencies()
+    dependencies.parentChannel.unarchiveThread = vi
+      .fn()
+      .mockRejectedValue(new Error('Discord API error'))
+    insertSession(dependencies.db, makeSessionRow({ status: 'closed' }))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
+      'discovered'
+    )
+    error.mockRestore()
+  })
+
+  it('adopts an identity for a legacy open row instead of skipping its pane', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('300')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(5000)
+    aliveIdentities(['300', 5000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-1',
+      jsonlPath: '/host/claude-config/projects/x/session-1.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    insertSession(dependencies.db, makeSessionRow())
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(resolveSessionId).toHaveBeenCalled()
+    const row = findSessionById(dependencies.db, 'session-1')
+    expect(row?.status).toBe('discovered')
+    expect(row?.claudePid).toBe('300')
+    expect(row?.claudeStartTicks).toBe(5000)
+    expect(createSessionThread).not.toHaveBeenCalled()
+  })
+
+  it('closes a session whose bound process is gone even though another claude runs in its pane', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    aliveIdentities()
+    const { dependencies } = makeDependencies()
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe('closed')
+  })
+
+  it('keeps a session open while its bound process identity is alive', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    vi.mocked(findClaudeProcessPid).mockResolvedValue(undefined)
+    aliveIdentities(['300', 5000])
+    const { dependencies } = makeDependencies()
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(findSessionById(dependencies.db, 'session-1')?.status).toBe(
+      'discovered'
+    )
+  })
+
+  it('fails the pending input of a session when it closes, leaving other sessions untouched', async () => {
+    vi.mocked(listAllTmuxPanes).mockResolvedValue([])
+    aliveIdentities(['301', 6000])
+    const { dependencies } = makeDependencies()
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+    insertSession(
+      dependencies.db,
+      makeSessionRow({
+        id: 'session-3',
+        threadId: 'thread-3',
+        tmuxPaneId: '%1',
+        claudePid: '301',
+        claudeStartTicks: 6000,
+      })
+    )
+    const closedPending = insertPendingInput(
+      dependencies.db,
+      'session-1',
+      'discord',
+      'queued before exit'
+    )
+    const otherPending = insertPendingInput(
+      dependencies.db,
+      'session-3',
+      'discord',
+      'for the live session'
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(stateOfInput(dependencies, closedPending)).toBe('failed')
+    expect(stateOfInput(dependencies, otherPending)).toBe('pending')
+  })
+
+  it('fails the pending input of a session closed because a new session replaced it in the pane', async () => {
+    vi.mocked(findClaudeProcessPid).mockResolvedValue('400')
+    vi.mocked(readProcessStartTicks).mockResolvedValue(8000)
+    aliveIdentities(['400', 8000])
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'resolved',
+      sessionId: 'session-2',
+      jsonlPath: '/host/claude-config/projects/x/session-2.jsonl',
+    })
+    const { dependencies, createSessionThread } = makeDependencies()
+    createSessionThread.mockResolvedValue({ id: 'thread-2' })
+    insertSession(
+      dependencies.db,
+      makeSessionRow({ claudePid: '300', claudeStartTicks: 5000 })
+    )
+    const pending = insertPendingInput(
+      dependencies.db,
+      'session-1',
+      'discord',
+      'queued for the old process'
+    )
+
+    await runDetectionCycle(dependencies, makeConfig())
+
+    expect(stateOfInput(dependencies, pending)).toBe('failed')
   })
 })
 

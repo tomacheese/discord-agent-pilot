@@ -3,18 +3,26 @@ import type { Config } from '../config/schema'
 import type { ParentChannel } from '../discord/parent-channel'
 import { buildFallbackThreadTitle } from '../discord/thread-title'
 import { formatThreadStatus } from '../discord/thread-status'
+import { failPendingInputs } from '../registry/input-queue'
 import {
   findOpenSessions,
+  findOpenSessionsByPaneId,
   findSessionById,
   insertSession,
   markSessionClosed,
+  rebindSession,
+  type SessionBinding,
   type SessionRow,
 } from '../registry/sessions'
 import { listAllTmuxPanes } from '../tmux/list-sessions'
-import { readProcessCwd, readProcessEnviron } from '../tmux/proc'
+import {
+  readProcessCwd,
+  readProcessEnviron,
+  readProcessStartTicks,
+} from '../tmux/proc'
 import {
   findClaudeProcessPid,
-  isClaudeProcessAlive,
+  isClaudeProcessIdentityAlive,
 } from '../tmux/process-tree'
 import {
   resolveContainerConfigDirectory,
@@ -25,6 +33,7 @@ import {
   promptSessionIdSelection,
   type PromptChannel,
 } from './ambiguity'
+import { isSessionProcessAlive } from './session-liveness'
 import {
   THREAD_STATUS_MIN_INTERVAL_MS,
   ThreadStatusTracker,
@@ -46,17 +55,6 @@ export interface OrchestratorDependencies {
   procRoot: string
   socketPath: string
   /**
-   * Panes (keyed by `${tmuxSession}:${panePid}`) whose sessionId has
-   * already been resolved and registered, mapped to the Claude process pid
-   * that was registered. On a later cycle the cached pid is re-checked
-   * cheaply via `isClaudeProcessAlive` before skipping the full resolution
-   * pipeline: if the pane's shell (long-lived `panePid`) now hosts a
-   * *different* `claude` invocation than the one that was cached (the
-   * previous session exited and a new one started), the cache entry is
-   * stale and the pane must be re-resolved rather than skipped forever.
-   */
-  resolvedPanes: Map<string, string>
-  /**
    * SessionIds currently mid-registration, guarding against two panes that
    * resolve to the same sessionId within one parallelized detection cycle
    * both attempting to create a Discord thread / insert the same
@@ -65,11 +63,6 @@ export interface OrchestratorDependencies {
   registeringSessionIds: Set<string>
   /** Tracks each thread's last-applied starter message content, to skip redundant Discord edits (see `updateThreadStatuses`). */
   statusTracker: ThreadStatusTracker
-}
-
-/** Builds the `resolvedPanes` cache key identifying a tmux session/pane pair. */
-function paneKey(tmuxSession: string, panePid: string): string {
-  return `${tmuxSession}:${panePid}`
 }
 
 /**
@@ -90,54 +83,193 @@ function isWithinWorkspaceRoots(
 }
 
 /**
- * Registers `sessionId` (creating its Discord thread) unless it is already
- * registered. Guards against concurrent registration of the
- * same sessionId from a parallel `processPane` call via
- * `dependencies.registeringSessionIds`.
+ * Marks `session` closed, fails its still-pending input (it was queued for a
+ * process that no longer backs the session, so it must not be delivered to a
+ * later process the session is resumed in), and archives its Discord thread
+ * for a forum parent channel. Text-channel threads are not archived.
+ *
+ * The DB close is authoritative regardless of the Discord API outcome: an
+ * `archiveThread` failure is logged and skipped so it never blocks the
+ * session from being marked closed.
+ */
+async function closeSession(
+  dependencies: OrchestratorDependencies,
+  config: Config,
+  session: SessionRow
+): Promise<void> {
+  markSessionClosed(dependencies.db, session.id)
+  failPendingInputs(dependencies.db, session.id)
+
+  if (config.parentChannel.type !== 'forum') return
+  try {
+    await dependencies.parentChannel.archiveThread?.(session.threadId)
+  } catch (error) {
+    console.error(
+      `Failed to archive thread ${session.threadId} for session ${session.id}:`,
+      error
+    )
+  }
+}
+
+/**
+ * Closes every open session bound to `paneId` other than `keepSessionId`.
+ * A pane hosts one Claude process, so once `keepSessionId` is bound to it any
+ * other open row for the pane is stale. Rows are closed independently: one
+ * failing must not leave the others open.
+ */
+async function closeOtherSessionsInPane(
+  dependencies: OrchestratorDependencies,
+  config: Config,
+  paneId: string,
+  keepSessionId: string
+): Promise<void> {
+  const stale = findOpenSessionsByPaneId(dependencies.db, paneId).filter(
+    (session) => session.id !== keepSessionId
+  )
+  const results = await Promise.allSettled(
+    stale.map((session) => closeSession(dependencies, config, session))
+  )
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'rejected') continue
+    console.error(
+      `Failed to close session ${stale[index].id} replaced in pane ${paneId}:`,
+      result.reason
+    )
+  }
+}
+
+/** Returns true if `session` is already open and bound to exactly `binding`. */
+function isBoundTo(session: SessionRow, binding: SessionBinding): boolean {
+  return (
+    session.status !== 'closed' &&
+    session.tmuxPaneId === binding.tmuxPaneId &&
+    session.claudePid === binding.claudePid &&
+    session.claudeStartTicks === binding.claudeStartTicks
+  )
+}
+
+/**
+ * Binds `resolved.sessionId` to the tmux pane and Claude process in
+ * `binding`, then closes the other open sessions of that pane.
+ *
+ * - Unknown session: creates its Discord thread and inserts the row.
+ * - Known session already bound to `binding`: nothing to do.
+ * - Known session otherwise (resumed after being closed, moved to another
+ *   pane, or restarted as a new process): rebinds the existing row, keeping
+ *   its thread and log offset, and unarchives the thread if it was closed.
+ *
+ * Guards against concurrent registration of the same sessionId from a
+ * parallel `processPane` call via `dependencies.registeringSessionIds`.
  */
 async function registerSession(
   dependencies: OrchestratorDependencies,
   config: Config,
-  sessionId: string,
-  tmuxSession: string,
-  panePid: string,
-  paneId: string,
-  claudePid: string,
+  resolved: { sessionId: string; jsonlPath: string },
+  binding: SessionBinding,
   cwd: string,
-  containerConfigDirectory: string,
-  jsonlPath: string
+  containerConfigDirectory: string
 ): Promise<void> {
-  if (findSessionById(dependencies.db, sessionId)) return
+  const { sessionId } = resolved
   if (dependencies.registeringSessionIds.has(sessionId)) return
   dependencies.registeringSessionIds.add(sessionId)
 
   try {
-    const thread = await dependencies.parentChannel.createSessionThread(
-      buildFallbackThreadTitle(cwd, tmuxSession)
-    )
-    const now = Date.now()
-    const row: SessionRow = {
-      id: sessionId,
-      threadId: thread.id,
-      parentChannelId: config.parentChannel.id,
-      tmuxSession,
-      tmuxPanePid: panePid,
-      tmuxPaneId: paneId,
-      cwd,
-      configDir: containerConfigDirectory,
-      jsonlPath,
-      jsonlOffset: 0,
-      status: 'discovered',
-      threadNameSource: 'fallback',
-      lastActionSummary: '',
-      createdAt: now,
-      updatedAt: now,
+    const existing = findSessionById(dependencies.db, sessionId)
+    if (existing) {
+      if (isBoundTo(existing, binding)) return
+      rebindSession(dependencies.db, sessionId, binding)
+      if (
+        existing.status === 'closed' &&
+        config.parentChannel.type === 'forum'
+      ) {
+        try {
+          await dependencies.parentChannel.unarchiveThread?.(existing.threadId)
+        } catch (error) {
+          console.error(
+            `Failed to unarchive thread ${existing.threadId} for session ${sessionId}:`,
+            error
+          )
+        }
+      }
+    } else {
+      const thread = await dependencies.parentChannel.createSessionThread(
+        buildFallbackThreadTitle(cwd, binding.tmuxSession)
+      )
+      const now = Date.now()
+      const row: SessionRow = {
+        id: sessionId,
+        threadId: thread.id,
+        parentChannelId: config.parentChannel.id,
+        ...binding,
+        cwd,
+        configDir: containerConfigDirectory,
+        jsonlPath: resolved.jsonlPath,
+        jsonlOffset: 0,
+        status: 'discovered',
+        threadNameSource: 'fallback',
+        lastActionSummary: '',
+        createdAt: now,
+        updatedAt: now,
+      }
+      insertSession(dependencies.db, row)
     }
-    insertSession(dependencies.db, row)
-    dependencies.resolvedPanes.set(paneKey(tmuxSession, panePid), claudePid)
+    await closeOtherSessionsInPane(
+      dependencies,
+      config,
+      binding.tmuxPaneId,
+      sessionId
+    )
   } finally {
     dependencies.registeringSessionIds.delete(sessionId)
   }
+}
+
+/**
+ * Reads the start time of `pid`, or returns undefined if it cannot be used
+ * as part of a process identity: the process already exited (`ENOENT`, an
+ * expected race) or its `stat` is malformed (logged). Other read errors
+ * propagate.
+ */
+async function readStartTicksIfRunning(
+  procRoot: string,
+  pid: string
+): Promise<number | undefined> {
+  try {
+    const startTicks = await readProcessStartTicks(procRoot, pid)
+    if (Number.isNaN(startTicks)) {
+      console.warn(`Malformed start time in stat for pid ${pid}; skipping pane`)
+      return undefined
+    }
+    return startTicks
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+/**
+ * Returns true if an open session of `paneId` is bound to a Claude process
+ * that is still running, in which case the pane needs no re-resolution. Legacy
+ * rows without a recorded identity never count, so the next resolution adopts
+ * an identity for them.
+ */
+async function hasLiveBoundSession(
+  dependencies: OrchestratorDependencies,
+  paneId: string
+): Promise<boolean> {
+  for (const session of findOpenSessionsByPaneId(dependencies.db, paneId)) {
+    if (
+      session.claudePid !== '' &&
+      (await isClaudeProcessIdentityAlive(
+        dependencies.procRoot,
+        session.claudePid,
+        session.claudeStartTicks
+      ))
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -151,18 +283,23 @@ async function processPane(
   panePid: string,
   paneId: string
 ): Promise<void> {
-  const cachedClaudePid = dependencies.resolvedPanes.get(
-    paneKey(tmuxSession, panePid)
-  )
-  if (
-    cachedClaudePid !== undefined &&
-    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
-  ) {
-    return
-  }
+  if (await hasLiveBoundSession(dependencies, paneId)) return
 
   const claudePid = await findClaudeProcessPid(dependencies.procRoot, panePid)
   if (!claudePid) return
+
+  const claudeStartTicks = await readStartTicksIfRunning(
+    dependencies.procRoot,
+    claudePid
+  )
+  if (claudeStartTicks === undefined) return
+  const binding: SessionBinding = {
+    tmuxSession,
+    tmuxPanePid: panePid,
+    tmuxPaneId: paneId,
+    claudePid,
+    claudeStartTicks,
+  }
 
   const cwd = await readProcessCwd(dependencies.procRoot, claudePid)
   if (!isWithinWorkspaceRoots(cwd, config.workspaceRoots)) return
@@ -213,14 +350,10 @@ async function processPane(
     await registerSession(
       dependencies,
       config,
-      selected.sessionId,
-      tmuxSession,
-      panePid,
-      paneId,
-      claudePid,
+      selected,
+      binding,
       cwd,
-      containerConfigDirectory,
-      selected.jsonlPath
+      containerConfigDirectory
     )
     return
   }
@@ -228,73 +361,21 @@ async function processPane(
   await registerSession(
     dependencies,
     config,
-    resolution.sessionId,
-    tmuxSession,
-    panePid,
-    paneId,
-    claudePid,
+    resolution,
+    binding,
     cwd,
-    containerConfigDirectory,
-    resolution.jsonlPath
+    containerConfigDirectory
   )
 }
 
-/**
- * Resolves whether `session`'s Claude Code process is still alive, via the
- * same cache-first check `processPane` uses for its `resolvedPanes` fast
- * path: `isClaudeProcessAlive` (a single `comm` file read) confirms a
- * still-live cached pid without paying for a full `/proc` tree walk;
- * `findClaudeProcessPid` (the tree walk) only runs as a fallback when the
- * cache is stale or missing. Shared by `closeSessionIfExited` and
- * `updateThreadStatuses` so each open session is only probed once per
- * detection cycle instead of twice.
- */
-async function isSessionAlive(
-  dependencies: OrchestratorDependencies,
-  session: SessionRow
-): Promise<boolean> {
-  const cachedClaudePid = dependencies.resolvedPanes.get(
-    paneKey(session.tmuxSession, session.tmuxPanePid)
-  )
-  if (
-    cachedClaudePid !== undefined &&
-    (await isClaudeProcessAlive(dependencies.procRoot, cachedClaudePid))
-  ) {
-    return true
-  }
-  return Boolean(
-    await findClaudeProcessPid(dependencies.procRoot, session.tmuxPanePid)
-  )
-}
-
-/**
- * Marks `session` closed (and archives its Discord thread, for a forum
- * parent channel) if its Claude process has exited; leaves it untouched
- * otherwise. See Issue #31's scope decision: text-channel threads are not
- * archived.
- *
- * The DB close is authoritative regardless of the Discord API outcome: an
- * `archiveThread` failure is logged and skipped so it never blocks the
- * session from being marked closed.
- */
+/** Closes `session` (see `closeSession`) if the Claude process it is bound to has exited; leaves it untouched otherwise. */
 async function closeSessionIfExited(
   dependencies: OrchestratorDependencies,
   config: Config,
   session: SessionRow
 ): Promise<void> {
-  if (await isSessionAlive(dependencies, session)) return
-
-  markSessionClosed(dependencies.db, session.id)
-
-  if (config.parentChannel.type !== 'forum') return
-  try {
-    await dependencies.parentChannel.archiveThread?.(session.threadId)
-  } catch (error) {
-    console.error(
-      `Failed to archive thread ${session.threadId} for session ${session.id}:`,
-      error
-    )
-  }
+  if (await isSessionProcessAlive(dependencies.procRoot, session)) return
+  await closeSession(dependencies, config, session)
 }
 
 /**
@@ -330,8 +411,8 @@ async function closeExitedSessions(
  * No-op entirely when the parent channel is not a forum, since only forum
  * threads have a starter message.
  *
- * Liveness is checked via the same cache-first pattern as
- * `closeSessionIfExited` (see `isSessionAlive`). Each session's computed
+ * Liveness is checked with `isSessionProcessAlive`, like
+ * `closeSessionIfExited`. Each session's computed
  * content is only sent to Discord when `dependencies.statusTracker` says it
  * actually changed and enough time has passed since the last edit, keeping
  * this well within Discord's message-edit rate limit even with many open
@@ -347,7 +428,10 @@ async function updateThreadStatuses(
   const now = Date.now()
   const results = await Promise.allSettled(
     openSessions.map(async (session) => {
-      const isRunning = await isSessionAlive(dependencies, session)
+      const isRunning = await isSessionProcessAlive(
+        dependencies.procRoot,
+        session
+      )
 
       const content = formatThreadStatus({
         isRunning,

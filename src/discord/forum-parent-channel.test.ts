@@ -31,6 +31,35 @@ describe('ForumParentChannel.archiveThread', () => {
   })
 })
 
+describe('ForumParentChannel.unarchiveThread', () => {
+  it('fetches the thread by id and unarchives it', async () => {
+    const setArchived = vi.fn().mockResolvedValue(undefined)
+    const fetch = vi.fn().mockResolvedValue({ setArchived })
+    const fakeForumChannel = {
+      threads: { fetch },
+    } as unknown as ForumChannel
+
+    const parentChannel = new ForumParentChannel(fakeForumChannel)
+    await parentChannel.unarchiveThread('thread-1')
+
+    expect(fetch).toHaveBeenCalledWith('thread-1')
+    expect(setArchived).toHaveBeenCalledWith(false)
+  })
+
+  it('does nothing when the thread no longer exists', async () => {
+    const fetch = vi.fn().mockResolvedValue(null)
+    const fakeForumChannel = {
+      threads: { fetch },
+    } as unknown as ForumChannel
+
+    const parentChannel = new ForumParentChannel(fakeForumChannel)
+
+    await expect(
+      parentChannel.unarchiveThread('thread-1')
+    ).resolves.toBeUndefined()
+  })
+})
+
 describe('ForumParentChannel.updateThreadStatus', () => {
   it('fetches the thread, fetches its starter message, and edits it', async () => {
     const edit = vi.fn().mockResolvedValue(undefined)
