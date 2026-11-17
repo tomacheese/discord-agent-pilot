@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ===== Stage 1: builder =====
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 
 # Native build tools required by better-sqlite3
 # hadolint ignore=DL3018
@@ -22,7 +22,7 @@ FROM builder AS prod-deps
 RUN pnpm prune --prod
 
 # ===== Stage 3: runner =====
-FROM node:24-alpine AS runner
+FROM node:26-alpine AS runner
 
 ENV NODE_ENV=production
 
