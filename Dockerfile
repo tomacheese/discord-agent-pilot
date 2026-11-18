@@ -9,7 +9,7 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm --activate
+RUN npm install --global corepack@0.36.0 && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
