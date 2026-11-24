@@ -25,7 +25,7 @@
     "@types/node": "24.19.2",
     "@vitest/coverage-v8": "5.1.1",
     "eslint": "10.15.0",
-    "fauxcord": "github:tomacheese/fauxcord#fd50fbbc0aca42fbf5b7be53417fb33114c6ffac",
+    "fauxcord": "github:tomacheese/fauxcord#3478a19a936b07348a5eebb81874c26b8c2dc090",
     "npm-run-all2": "9.1.0",
     "prettier": "3.10.1",
     "typescript": "6.0.3",
