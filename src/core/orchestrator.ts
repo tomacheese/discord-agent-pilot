@@ -340,12 +340,16 @@ async function processPane(
       panePid,
       resolution.candidates
     )
-    const selected = await promptSessionIdSelection(
-      dependencies.promptChannel,
-      resolution.candidates,
-      config
-    )
-    dependencies.ambiguityTracker.resolve(tmuxSession, panePid)
+    let selected
+    try {
+      selected = await promptSessionIdSelection(
+        dependencies.promptChannel,
+        resolution.candidates,
+        config
+      )
+    } finally {
+      dependencies.ambiguityTracker.resolve(tmuxSession, panePid)
+    }
     if (!selected) return
     await registerSession(
       dependencies,

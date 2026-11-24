@@ -366,6 +366,60 @@ describe('runDetectionCycle', () => {
     )
   })
 
+  it('retries an ambiguity prompt after a send failure', async () => {
+    vi.mocked(resolveSessionId).mockResolvedValue({
+      kind: 'ambiguous',
+      candidates: [
+        { sessionId: 'session-a', jsonlPath: '/config/session-a.jsonl' },
+        { sessionId: 'session-b', jsonlPath: '/config/session-b.jsonl' },
+      ],
+    })
+    const { dependencies, createSessionThread, promptSend } = makeDependencies()
+    const error = new Error('Discord send failed')
+    const logError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    promptSend.mockRejectedValueOnce(error).mockResolvedValueOnce({
+      createMessageComponentCollector: () => ({
+        on: (event: string, callback: (interaction: unknown) => void) => {
+          if (event === 'collect') {
+            callback({
+              user: { id: 'user-1' },
+              values: ['session-b'],
+              reply: vi.fn(),
+            })
+          }
+        },
+        stop: vi.fn(),
+      }),
+    })
+
+    try {
+      await runDetectionCycle(dependencies, makeConfig())
+
+      expect(logError).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to process pane tmux-1'),
+        error
+      )
+      expect(dependencies.ambiguityTracker.isPending('tmux-1', '100')).toBe(
+        false
+      )
+      expect(createSessionThread).not.toHaveBeenCalled()
+
+      await runDetectionCycle(dependencies, makeConfig())
+
+      expect(promptSend).toHaveBeenCalledTimes(2)
+      expect(findSessionById(dependencies.db, 'session-b')?.jsonlPath).toBe(
+        '/config/session-b.jsonl'
+      )
+      expect(dependencies.ambiguityTracker.isPending('tmux-1', '100')).toBe(
+        false
+      )
+    } finally {
+      logError.mockRestore()
+    }
+  })
+
   it('does not register a session when the ambiguity prompt times out', async () => {
     vi.mocked(resolveSessionId).mockResolvedValue({
       kind: 'ambiguous',
