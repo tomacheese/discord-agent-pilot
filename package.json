@@ -22,7 +22,7 @@
   "devDependencies": {
     "@book000/eslint-config": "1.15.37",
     "@types/better-sqlite3": "9.6.0",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.10",
     "@vitest/coverage-v8": "5.1.1",
     "eslint": "10.15.0",
     "fauxcord": "github:tomacheese/fauxcord#3478a19a936b07348a5eebb81874c26b8c2dc090",
